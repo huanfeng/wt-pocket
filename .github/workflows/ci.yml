@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            runtime: win-x64
+          - os: windows-11-arm
+            runtime: win-arm64
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: pwsh
@@ -20,23 +27,38 @@ jobs:
         with:
           dotnet-version: |
             8.0.x
-            10.0.x
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-docs
+          rustup default stable
+      - name: Rust checks
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust clippy failed' }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
       - name: Build
         run: ./scripts/Build.ps1
       - name: Headless tests
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($test in @('Smoke', 'Module', 'Startup', 'Drag')) {
+          foreach ($test in @('Smoke', 'Module', 'Startup', 'Backend.Migration')) {
             & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
           }
-      - name: Package x64
-        run: ./scripts/Package.ps1 -Version 0.1.0 -Runtime win-x64
+      - name: Package native release
+        env:
+          PACKAGE_RUNTIME: ${{ matrix.runtime }}
+        run: ./scripts/Package.ps1 -Version 0.2.0 -Runtime $env:PACKAGE_RUNTIME
       - name: Offline release installer tests
-        run: ./tests/Install.Release.Tests.ps1 -ArchivePath ./artifacts/release/v0.1.0/wtpocket-v0.1.0-win-x64.zip -ChecksumPath ./artifacts/release/v0.1.0/SHA256SUMS
+        env:
+          PACKAGE_RUNTIME: ${{ matrix.runtime }}
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/v0.2.0/wtpocket-v0.2.0-$env:PACKAGE_RUNTIME.zip" -ChecksumPath ./artifacts/release/v0.2.0/SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
-          name: wtpocket-ci-win-x64
-          path: artifacts/release/v0.1.0/*
+          name: wtpocket-ci-${{ matrix.runtime }}
+          path: artifacts/release/v0.2.0/*
           if-no-files-found: error
           retention-days: 7

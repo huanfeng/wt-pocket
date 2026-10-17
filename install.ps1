@@ -111,7 +111,7 @@ try {
     foreach ($requiredFile in @(
         'LICENSE', 'README.md',
         'scripts/Install-WtTools.ps1', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1',
-        'powershell/Startup.ps1', 'powershell/WtTools.psm1', 'src/PanelHost.cs',
+        'powershell/Startup.ps1', 'powershell/WtTools.psm1',
         'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll'
     )) {
         if (-not [IO.File]::Exists((Join-Path $extractionRoot $requiredFile))) {

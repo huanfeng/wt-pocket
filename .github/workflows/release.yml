@@ -8,7 +8,14 @@ permissions:
 
 jobs:
   package:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            runtime: win-x64
+          - os: windows-11-arm
+            runtime: win-arm64
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: pwsh
@@ -18,26 +25,37 @@ jobs:
         with:
           dotnet-version: |
             8.0.x
-            10.0.x
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-docs
+          rustup default stable
       - name: Build and test
         run: |
           $ErrorActionPreference = 'Stop'
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust clippy failed' }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
           ./scripts/Build.ps1
-          foreach ($test in @('Smoke', 'Module', 'Startup', 'Drag')) {
+          foreach ($test in @('Smoke', 'Module', 'Startup', 'Backend.Migration')) {
             & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
           }
-      - name: Package self-contained x64 and ARM64 releases
+      - name: Package native release
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: ./scripts/Package.ps1 -Version $env:RELEASE_TAG
-      - name: Test offline x64 installation
+          PACKAGE_RUNTIME: ${{ matrix.runtime }}
+        run: ./scripts/Package.ps1 -Version $env:RELEASE_TAG -Runtime $env:PACKAGE_RUNTIME
+      - name: Test offline installation
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/$env:RELEASE_TAG/wtpocket-$env:RELEASE_TAG-win-x64.zip" -ChecksumPath "./artifacts/release/$env:RELEASE_TAG/SHA256SUMS"
+          PACKAGE_RUNTIME: ${{ matrix.runtime }}
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/$env:RELEASE_TAG/wtpocket-$env:RELEASE_TAG-$env:PACKAGE_RUNTIME.zip" -ChecksumPath "./artifacts/release/$env:RELEASE_TAG/SHA256SUMS"
       - uses: actions/upload-artifact@v7
         with:
-          name: release-assets
+          name: release-assets-${{ matrix.runtime }}
           path: artifacts/release/${{ github.ref_name }}/*
           if-no-files-found: error
           retention-days: 7
@@ -50,8 +68,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: release-assets
+          pattern: release-assets-*
           path: release-assets
+          merge-multiple: true
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -60,6 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          (cd release-assets && sha256sum wtpocket-*.zip > SHA256SUMS)
           args=("$RELEASE_TAG" release-assets/* --verify-tag --generate-notes --title "WTPocket $RELEASE_TAG")
           if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"

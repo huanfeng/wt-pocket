@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.0
+
+- Replace the .NET panel controller with a native Rust executable; keep the lightweight PowerShell integration and existing pipe protocol.
+- Remove the bundled .NET runtime and statically link the native CRT. Local x64 ZIP size is approximately 0.4 MB, down from 35 MB.
+- Preserve per-session panels, literal paths, tab-independent ownership, physical per-monitor sizing, Alt+F, borderless dragging and orphan recovery.
+- Keep low-level hooks responsive while Windows Terminal starts on the pipe thread.
+- Restrict pipes to the current user, reject remote clients, and test malformed, oversized, disconnected and idle clients.
+- Build and test releases natively on Windows x64 and ARM64; include locked Rust dependency license notices.
+- Port drag and DPI regressions to the actual Rust callbacks. Real WT integration passes on both local monitors; physical input remains a manual validation step.
+
 ## v0.1.2
 
 - Install each distinct payload in a separate content-addressed directory, avoiding locked DLL overwrites during upgrades.

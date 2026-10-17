@@ -1,53 +1,28 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-Add-Type -Path (Join-Path $root 'src/PanelHost.cs')
+$modulePath = Join-Path $root 'powershell/WtTools.psm1'
 $script:checks = 0
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
     $script:checks++
 }
-
-# Fit on small displays, secondary displays with negative coordinates, and when
-# the source window straddles displays. Never place any part outside the work area.
-foreach ($sample in @(
-    @(0, 0, 1920, 1080, 0, 0, 1920, 1040),
-    @(-1920, 0, 0, 1080, -1920, 0, 0, 1040),
-    @(0, 0, 400, 250, 0, 0, 400, 230),
-    @(1500, -100, 3400, 1400, 1920, 0, 3840, 1080)
-)) {
-    $box = [WtTools.PanelGeometry]::Center.Invoke($sample)
-    Assert-True ($box[0] -ge $sample[4] -and $box[1] -ge $sample[5]) 'Panel starts within work area'
-    Assert-True ($box[0] + $box[2] -le $sample[6] -and $box[1] + $box[3] -le $sample[7]) 'Panel ends within work area'
-    Assert-True ($box[2] -gt 0 -and $box[3] -gt 0) 'Panel has positive dimensions'
-}
-
-$hostilePath = 'D:\中文 path\a''b; $(throw "injection") [x] `literal'
-$modulePath = Join-Path $root 'powershell/WtTools.psm1'
-$bootstrap = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(
-    [WtTools.PanelHost]::Bootstrap($hostilePath, $modulePath)))
-$tokens = $null; $parseErrors = $null
-$ast = [Management.Automation.Language.Parser]::ParseInput($bootstrap, [ref]$tokens, [ref]$parseErrors)
-Assert-True ($parseErrors.Count -eq 0) 'Bootstrap is valid PowerShell'
-$location = $ast.FindAll({ param($node)
-    $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Set-Location'
-}, $true)[0]
-Assert-True ($location.CommandElements[-1].Value -ceq $hostilePath) 'Special characters remain a literal path'
-Assert-True ($location.CommandElements[-2].ParameterName -eq 'LiteralPath') 'Path uses LiteralPath'
-
 # The host starts without WT, rejects an invalid request, survives it, then shuts
 # down cleanly. This test never creates or closes user terminal windows.
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wttools-tests-' + [guid]::NewGuid().ToString('N'))
 $pipeName = 'wttools-tests-' + [guid]::NewGuid().ToString('N')
 $hostProcess = $null
 function Send-TestRequest([hashtable] $Request) {
+    Send-TestJson ($Request | ConvertTo-Json -Compress)
+}
+function Send-TestJson([string] $Json) {
     $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(3000)
         $reader = [IO.StreamReader]::new($pipe)
         $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true)
         $writer.AutoFlush = $true
-        $writer.WriteLine(($Request | ConvertTo-Json -Compress))
+        $writer.WriteLine($Json)
         $pending = $reader.ReadLineAsync()
         if (-not $pending.Wait(5000)) { throw 'Host response timeout' }
         return $pending.Result | ConvertFrom-Json
@@ -75,11 +50,36 @@ try {
         Start-Sleep -Milliseconds 100
     }
     Assert-True (Test-Path -LiteralPath $hostInfo) 'Host starts without dependencies or a build step'
+    Assert-True ((Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).backend -eq 'rust') 'The tested host is the Rust backend'
     $startupMs = $timer.ElapsedMilliseconds
     $response = Send-TestRequest @{ action = 'toggle'; directory = $testRoot; sourceWindow = 0 }
     Assert-True (-not $response.ok -and $response.error -match 'Windows Terminal') 'Host rejects invalid source HWND'
     $response = Send-TestRequest @{ action = 'unknown' }
     Assert-True (-not $response.ok) 'Host rejects unsupported actions and keeps serving'
+    $response = Send-TestJson '{broken-json'
+    Assert-True (-not $response.ok) 'Malformed JSON receives an error without stopping the host'
+    $response = Send-TestJson ('{"sourceWindow":"' + ('x' * 60000) + '"}')
+    Assert-True (-not $response.ok -and $response.error.Length -le 1024) 'Client strings cannot expand an error beyond the pipe output buffer'
+    $response = Send-TestJson ('x' * 65537)
+    Assert-True (-not $response.ok -and $response.error -match '64 KiB') 'Oversized requests are bounded'
+    $abandoned = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
+    $abandoned.Connect(3000)
+    $abandoned.Dispose()
+    $response = Send-TestRequest @{ action = 'unknown' }
+    Assert-True (-not $response.ok) 'Host recovers from a client disconnecting without a request'
+
+    $idle = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
+    try {
+        $idle.Connect(3000)
+        $idleReader = [IO.StreamReader]::new($idle)
+        $pendingIdle = $idleReader.ReadLineAsync()
+        Assert-True ($pendingIdle.Wait(17000) -and ($pendingIdle.Result | ConvertFrom-Json).error -match 'timed out') 'Idle clients time out without blocking the host indefinitely'
+    } finally { $idle.Dispose() }
+    $duplicate = [Diagnostics.Process]::Start($start)
+    try {
+        Assert-True ($duplicate.WaitForExit(3000) -and $duplicate.ExitCode -eq 0) 'A second host for the same pipe exits without replacing the running host'
+        Assert-True ((Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).pid -eq $hostProcess.Id) 'Duplicate startup preserves existing host metadata'
+    } finally { if (-not $duplicate.HasExited) { $duplicate.Kill() }; $duplicate.Dispose() }
     $actualHostId = (Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).pid
     $actualHost = Get-Process -Id $actualHostId
     $workingSet = [math]::Round($actualHost.WorkingSet64 / 1MB, 1)

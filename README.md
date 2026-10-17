@@ -20,7 +20,9 @@
 irm https://raw.githubusercontent.com/huanfeng/wt-pocket/main/install.ps1 | iex
 ```
 
-安装器下载适合当前系统架构的最新 Release，校验 SHA-256 后安装。Release 包含独立运行的 .NET 控制程序，**用户无需安装 .NET Runtime 或 SDK**。
+安装器下载适合当前系统架构的最新 Release，校验 SHA-256 后安装。后台是直接运行的 Rust 原生程序，**无需额外安装 Rust、.NET Runtime、SDK 或 VC++ 运行库**。
+
+v0.2.0 的本机 x64 压缩包约 **0.4 MB**（v0.1.2 约 35 MB），不再携带完整 .NET 运行时。PowerShell 接入保留一个很小的 Win32 接口 DLL，使用 PowerShell 自带的 .NET。
 
 安装后新开一个 PowerShell 标签页，按 **Alt+F**。安装器会先备份 PowerShell 配置，再添加带标记的接入代码；不修改 WT 设置，也不添加登录启动项。
 
@@ -88,6 +90,8 @@ Stop-WtTools
 
 配置备份、目录记录、旧安装文件都会保留。安装器不自动清理旧版本，因为其他 Shell 仍可能使用它们。
 
+从 v0.1.x 升到 Rust 版本后，新标签页首次使用 Panel 会优雅停止旧 C# 控制程序，再启动 Rust 后台。旧 Panel 会重新显示并解除关联，其中运行的 Shell 和命令继续保留；可正常关闭后重建。之后同一 Rust 后台的更新继续保留正在运行的控制程序。
+
 卸载：
 
 ```powershell
@@ -109,7 +113,9 @@ pwsh -NoProfile -File $uninstaller
 
 ## 开发与验证
 
-需要 PowerShell 7.4+ 和 **.NET 10 SDK**。控制程序目标为 .NET 10，Shell 接口 DLL 目标为 .NET 8，兼容 PowerShell 7.4+。没有第三方运行时包依赖。
+需要 PowerShell 7.4+、**Rust 1.88+ MSVC 工具链、Visual Studio C++ Build Tools 与 Windows SDK**，以及用于构建小型 PowerShell 接口 DLL 的 **.NET 8+ SDK**。Rust 后台静态链接 CRT；接口 DLL 目标为 .NET 8，兼容 PowerShell 7.4+。
+
+后台使用 `windows-sys`、`serde` / `serde_json` 和 `base64`，依赖版本锁定在 `Cargo.lock`；没有 GUI 或异步运行时框架。Release 附带依赖及 Rust 标准库的许可声明。
 
 ```powershell
 git clone https://github.com/huanfeng/wt-pocket.git
@@ -118,16 +124,22 @@ pwsh -NoProfile -File ./scripts/Build.ps1
 pwsh -NoProfile -File ./scripts/Install-WtTools.ps1
 ```
 
-普通开发构建需要对应 .NET Runtime；Release 使用自包含发布，用户不需要单独安装运行时。
+默认构建当前机器架构。交叉构建 ARM64 还需对应的 Rust target 和 Visual Studio ARM64 工具；CI/Release 分别在 x64、ARM64 Windows 机器上原生构建和测试。
+
+本机打包可执行 `./scripts/Package.ps1 -Version 0.2.0 -Runtime win-x64`。生成许可声明需要 `rustup component add rust-docs`；这只影响开发机打包，不是用户安装依赖。
 
 自动检查不依赖 Pester：
 
 ```powershell
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 pwsh -NoProfile -File ./tests/Smoke.Tests.ps1
 pwsh -NoProfile -File ./tests/Drag.Tests.ps1
 pwsh -NoProfile -File ./tests/Drag.Dpi.Tests.ps1
 pwsh -NoProfile -File ./tests/Module.Tests.ps1
 pwsh -NoProfile -File ./tests/Startup.Tests.ps1
+pwsh -NoProfile -File ./tests/Backend.Migration.Tests.ps1
 pwsh -NoProfile -File ./tests/Install.Release.Tests.ps1
 ```
 
@@ -139,15 +151,15 @@ pwsh -NoProfile -File ./tests/Panel.Integration.Tests.ps1
 pwsh -NoProfile -File ./tests/Panel.Integration.Tests.ps1 -MonitorIndex 1
 ```
 
-检查覆盖目录继承、窗口显隐、会话复用、新增标签页后的关联、孤立 Panel 恢复、轻量启动，以及鼠标移动事件放行和 DPI 上下文恢复。默认不注入键盘或鼠标事件；主屏和副屏拖动已有人工验证，持续跨屏拖动未做自动输入测试。
+检查覆盖目录继承、窗口显隐、会话复用、新增标签页后的关联、孤立 Panel 恢复、轻量启动、无效/超长/超时管道请求，以及鼠标移动事件放行和 DPI 上下文恢复。Rust 的 DPI 测试使用各显示器上的临时原生窗口，由 `Drag.Dpi.Tests.ps1` 显式运行；无桌面的 CI 跳过该项。默认不注入键盘或鼠标事件；Rust 后台的真实手动拖动和持续跨屏拖动仍需人工验证。
 
-新 Shell 只加载轻量接入脚本；首次使用 Panel 才加载完整模块和预编译的 Win32 接口 DLL，并启动共享控制程序。不同 Panel 的 PowerShell 会话各自保留。首次加载 PSReadLine 仍有初始化成本，启动耗时会受用户配置影响。
+新 Shell 只加载轻量接入脚本；首次使用 Panel 才加载完整模块和预编译的 Win32 接口 DLL，并启动共享 Rust 控制程序。不同 Panel 的 PowerShell 会话各自保留。首次加载 PSReadLine 仍有初始化成本，启动耗时会受用户配置影响。
 
 ## CI 与 Release
 
 GitHub Actions 在推送和 Pull Request 时构建并运行自动检查。真实桌面交互测试保留为本地验证，不以无桌面的 CI 结果替代。
 
-推送 `v*` 版本标签触发 Release 工作流，构建 Windows **x64 / ARM64** 自包含包，并上传 ZIP 和 SHA-256 校验文件到 GitHub Releases。发布前应先确保 `main` 的 CI 通过，并在实际 WT 环境完成交互验证。
+推送 `v*` 版本标签触发 Release 工作流，在 Windows **x64 / ARM64** 机器上分别构建和测试原生程序，并上传 ZIP 和合并后的 SHA-256 校验文件到 GitHub Releases。发布前应先确保 `main` 的 CI 通过，并在实际 WT 环境完成交互验证。
 
 ```powershell
 git tag v0.1.0
@@ -160,10 +172,10 @@ git push origin v0.1.0
 install.ps1                    在线 Release 安装入口
 powershell/Startup.ps1         轻量启动接入
 powershell/WtTools.psm1        Shell 集成、目录记忆、快捷键、IPC
-src/PanelHost.cs              窗口管理、Panel 快捷键、命名管道
-src/WtTools.Host/              独立控制程序
+Cargo.toml / Cargo.lock       Rust 构建与锁定依赖
+src/host/                    Rust 窗口管理、快捷键、命名管道与回归测试
 src/WtTools.ShellNative/       预编译的 Shell Win32 接口
-scripts/                      构建、打包、安装与卸载
+scripts/                      构建、打包、许可声明、安装与卸载
 tests/                        自动检查与 WT 集成测试
 .github/workflows/            CI 与 Release
 ```

@@ -26,7 +26,7 @@ try {
         }
         foreach ($relative in @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1',
                 'scripts/Install-WtTools.ps1', 'scripts/Uninstall-WtTools.ps1', 'scripts/Start-WtToolsHost.ps1',
-                'src/PanelHost.cs', 'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll')) {
+                'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll')) {
             Copy-Item -LiteralPath (Join-Path $root $relative) -Destination (Join-Path $stage $relative)
         }
         $ArchivePath = Join-Path $testRoot 'wtpocket-v0.1.0-win-x64.zip'
@@ -70,11 +70,13 @@ try {
     Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'powershell/Startup.ps1'))) 'Release installs the lazy startup script'
     Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'host/wttools-host.exe'))) 'Release installs the compiled host'
     Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'LICENSE'))) 'Installed application retains its MIT license'
+    Assert-True (-not [IO.File]::Exists((Join-Path $installedRoot 'host/coreclr.dll'))) 'Rust installation contains no bundled .NET runtime'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $installedRoot 'host') -File).Count -eq 2) 'Host payload contains only the native executable and PowerShell helper'
     Assert-True (@(Get-ChildItem -LiteralPath (Split-Path $testProfilePath -Parent) -Filter '*.bak').Count -gt 0) 'Existing profile is backed up'
 
-    if ([IO.File]::Exists((Join-Path $installedRoot 'host/coreclr.dll'))) {
-        # Real release packages must run from the installed directory with
-        # their own runtime. This never creates a Terminal or panel window.
+    if ([IO.File]::Exists((Join-Path $installedRoot 'host/wttools-host.exe'))) {
+        # Native releases run from the installed directory without a runtime
+        # bundle. This never creates a Terminal or panel window.
         $pipeName = 'wtpocket-release-test-' + [guid]::NewGuid().ToString('N')
         $healthState = Join-Path $testRoot 'host-health'
         $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $installedRoot 'host/wttools-host.exe'))
@@ -85,7 +87,8 @@ try {
         $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
         try {
             $pipe.Connect(10000)
-            Assert-True (-not $runningHost.HasExited) 'Installed self-contained release host starts'
+            Assert-True (-not $runningHost.HasExited) 'Installed native Rust release host starts'
+            Assert-True ((Get-Content -LiteralPath (Join-Path $healthState 'host.json') -Raw | ConvertFrom-Json).backend -eq 'rust') 'Installed release runs the Rust backend'
             $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true)
             $writer.AutoFlush = $true
             $reader = [IO.StreamReader]::new($pipe)

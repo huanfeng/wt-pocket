@@ -72,6 +72,7 @@ try {
     [Management.Automation.Language.Parser]::ParseFile($fixtureProfile, [ref]$tokens, [ref]$errors) | Out-Null
     Assert-True ($errors.Count -eq 0) 'Installed profile handles apostrophes in paths'
     $installedRoot = (Get-Content -LiteralPath (Join-Path $destination 'current.json') -Raw | ConvertFrom-Json).path
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $installedRoot 'host') -File).Count -eq 2) 'Source install excludes stale .NET build artifacts'
     $installedModule = Join-Path $installedRoot 'powershell/WtTools.psm1'
     $temporarilyMissing = $installedModule + '.missing'
     Move-Item -LiteralPath $installedModule -Destination $temporarilyMissing

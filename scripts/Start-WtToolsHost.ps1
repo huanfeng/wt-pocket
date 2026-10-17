@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'wttools requires Windows.' }
 $root = Split-Path $PSScriptRoot -Parent
-Add-Type -Path (Join-Path $root 'src/PanelHost.cs')
-[WtTools.PanelHost]::Run($PipeName, $StateRoot,
-    (Join-Path $root 'powershell/WtTools.psm1'), (Join-Path $PSHOME 'pwsh.exe'))
+$executable = @((Join-Path $root 'host/wttools-host.exe'), (Join-Path $root 'artifacts/host/wttools-host.exe')) |
+    Where-Object { [IO.File]::Exists($_) } | Select-Object -First 1
+if (-not $executable) { throw 'Rust host is missing. Run scripts/Build.ps1 or reinstall WTPocket.' }
+& $executable $PipeName $StateRoot (Join-Path $root 'powershell/WtTools.psm1') (Join-Path $PSHOME 'pwsh.exe')

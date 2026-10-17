@@ -4,3 +4,4 @@ artifacts/
 *.user
 **/bin/
 **/obj/
+/target/

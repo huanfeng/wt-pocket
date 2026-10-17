@@ -22,19 +22,22 @@ try {
 $hostOutput = Join-Path $root 'artifacts/host'
 if ((-not (Test-Path -LiteralPath (Join-Path $hostOutput 'wttools-host.exe')) -or
         -not (Test-Path -LiteralPath (Join-Path $hostOutput 'WtTools.ShellNative.dll'))) -and
-        (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        [IO.File]::Exists((Join-Path $PSScriptRoot 'Build.ps1'))) {
     & (Join-Path $PSScriptRoot 'Build.ps1')
 }
 if (-not [IO.File]::Exists((Join-Path $hostOutput 'WtTools.ShellNative.dll'))) {
-    throw 'wttools native API assembly is missing. Run scripts/Build.ps1 with the .NET 10 SDK, then reinstall wttools.'
+    throw 'wttools native API assembly is missing. Run scripts/Build.ps1, then reinstall wttools.'
 }
 # Inventory and hash the entire payload before touching the installation.
 # Every distinct payload gets its own directory: loaded DLLs are never replaced.
-$files = @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1', 'src/PanelHost.cs', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1')
+$files = @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1')
 $payload = @{}
 foreach ($relative in $files) { $payload[$relative] = Join-Path $root $relative }
-foreach ($file in (Get-ChildItem -LiteralPath $hostOutput -File | Where-Object Extension -ne '.pdb')) {
+foreach ($file in (Get-Item -LiteralPath (Join-Path $hostOutput 'wttools-host.exe'), (Join-Path $hostOutput 'WtTools.ShellNative.dll'))) {
     $payload['host/' + $file.Name] = $file.FullName
+}
+if ([IO.File]::Exists((Join-Path $root 'THIRD-PARTY-NOTICES.txt'))) {
+    $payload['THIRD-PARTY-NOTICES.txt'] = Join-Path $root 'THIRD-PARTY-NOTICES.txt'
 }
 if (-not $payload.ContainsKey('host/wttools-host.exe')) { throw 'wttools host executable is missing. Run scripts/Build.ps1 first.' }
 $hashes = @{}

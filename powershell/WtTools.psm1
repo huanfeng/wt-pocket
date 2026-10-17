@@ -74,8 +74,34 @@ function Start-WtToolsHost {
     }
 }
 
+function Get-WtToolsHostInfo {
+    try {
+        [IO.File]::ReadAllText((Join-Path $script:StateRoot 'host.json')) | ConvertFrom-Json -ErrorAction Stop
+    } catch { return $null } # The previous host may be removing its metadata.
+}
+
 function Send-WtToolsRequest {
     param([hashtable] $Request, [switch] $DoNotStart)
+    $infoPath = Join-Path $script:StateRoot 'host.json'
+    # A new shell must actually use the Rust backend, even if an old C# host
+    # still owns the compatible pipe. Graceful shutdown reveals its panels;
+    # it never terminates their shells or touches loaded assemblies.
+    if (-not $DoNotStart -and [IO.File]::Exists($infoPath)) {
+        $previousHost = Get-WtToolsHostInfo
+        if ($previousHost -and $previousHost.backend -ne 'rust') {
+            Send-WtToolsRequest @{ action = 'shutdown' } -DoNotStart
+            $deadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ([IO.File]::Exists($infoPath)) {
+                $currentHost = Get-WtToolsHostInfo
+                if (-not $currentHost -or $currentHost.pid -ne $previousHost.pid) { break }
+                $previousProcess = Get-Process -Id $previousHost.pid -ErrorAction SilentlyContinue
+                if (-not $previousProcess) { break } # Stale metadata after a crash.
+                $previousProcess.Dispose()
+                if ([DateTime]::UtcNow -ge $deadline) { throw 'The previous wttools host did not stop. Retry after closing its controller.' }
+                Start-Sleep -Milliseconds 30
+            }
+        }
+    }
     $pipe = $null
     try {
         $pipeName = Get-WtToolsPipeName
@@ -87,10 +113,9 @@ function Send-WtToolsRequest {
             $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
             $pipe.Connect(12000)
         }
-        $infoPath = Join-Path $script:StateRoot 'host.json'
-        if (Test-Path -LiteralPath $infoPath) {
+        $hostInfo = Get-WtToolsHostInfo
+        if ($hostInfo) {
             Initialize-WtToolsNative
-            $hostInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
             [WtTools.ShellNative]::AllowSetForegroundWindow([uint32]$hostInfo.pid) | Out-Null
         }
         $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true)
