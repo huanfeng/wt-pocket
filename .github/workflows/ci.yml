@@ -1,0 +1,42 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build
+        run: ./scripts/Build.ps1
+      - name: Headless tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($test in @('Smoke', 'Module', 'Startup', 'Drag')) {
+            & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
+          }
+      - name: Package x64
+        run: ./scripts/Package.ps1 -Version 0.1.0 -Runtime win-x64
+      - name: Offline release installer tests
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath ./artifacts/release/v0.1.0/wtpocket-v0.1.0-win-x64.zip -ChecksumPath ./artifacts/release/v0.1.0/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wtpocket-ci-win-x64
+          path: artifacts/release/v0.1.0/*
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>wttools-host</AssemblyName>
+    <Version>0.1.0</Version>
+    <Product>WTPocket</Product>
+    <Description>A floating terminal companion for Windows Terminal.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <NuGetAudit>false</NuGetAudit>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../PanelHost.cs" Link="PanelHost.cs" />
+  </ItemGroup>
+</Project>

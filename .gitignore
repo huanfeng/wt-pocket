@@ -1,0 +1,6 @@
+.omx/
+.research/
+artifacts/
+*.user
+**/bin/
+**/obj/

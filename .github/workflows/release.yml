@@ -1,0 +1,65 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build and test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/Build.ps1
+          foreach ($test in @('Smoke', 'Module', 'Startup', 'Drag')) {
+            & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
+            if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
+          }
+      - name: Package self-contained x64 and ARM64 releases
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./scripts/Package.ps1 -Version $env:RELEASE_TAG
+      - name: Test offline x64 installation
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/$env:RELEASE_TAG/wtpocket-$env:RELEASE_TAG-win-x64.zip" -ChecksumPath "./artifacts/release/$env:RELEASE_TAG/SHA256SUMS"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: artifacts/release/${{ github.ref_name }}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=("$RELEASE_TAG" release-assets/* --verify-tag --generate-notes --title "WTPocket $RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "${args[@]}"
