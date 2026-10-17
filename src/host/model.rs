@@ -54,8 +54,17 @@ pub fn center(parent: Bounds, work: Bounds) -> Bounds {
 }
 
 pub fn bootstrap(directory: &str, module: &str, state: &str) -> String {
+    // PowerShell also treats the curly single quotes as string delimiters.
     fn quote(value: &str) -> String {
-        format!("'{}'", value.replace('\'', "''"))
+        let mut quoted = String::from("'");
+        for c in value.chars() {
+            if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+                quoted.push(c);
+            }
+            quoted.push(c);
+        }
+        quoted.push('\'');
+        quoted
     }
     let code = format!(
         "$env:WTTOOLS_PANEL = '1'; \
@@ -132,5 +141,19 @@ mod tests {
         assert!(code.contains("Import-Module 'C:\\a''b\\module.psm1'"));
         assert!(code.contains("-StateRoot 'C:\\state''s'"));
         assert!(code.starts_with("$env:WTTOOLS_PANEL = '1';"));
+    }
+
+    #[test]
+    fn bootstrap_doubles_curly_single_quotes() {
+        let encoded = bootstrap("D:\\a\u{2019}; calc; \u{2018}b\u{201A}\u{201B}", "m", "s");
+        let bytes = STANDARD.decode(encoded).unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .collect();
+        let code = String::from_utf16(&units).unwrap();
+        assert!(code.ends_with(
+            "-LiteralPath 'D:\\a\u{2019}\u{2019}; calc; \u{2018}\u{2018}b\u{201A}\u{201A}\u{201B}\u{201B}'"
+        ));
     }
 }
