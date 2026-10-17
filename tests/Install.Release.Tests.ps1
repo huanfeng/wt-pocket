@@ -53,23 +53,33 @@ try {
     Assert-True ([IO.File]::ReadAllText($testProfilePath) -ceq $originalProfile) 'Checksum failure leaves the profile untouched'
     Assert-True (-not (Test-Path -LiteralPath $destination)) 'Checksum failure does not install files'
 
-    & (Join-Path $root 'install.ps1') @arguments -ChecksumPath $ChecksumPath | Out-Null
+    # Migrate a legacy flat installation while a shell holds a DIFFERENT helper
+    # open. The old installer failed here even from a fresh PowerShell process.
+    $legacyHelper = Join-Path $destination 'host/WtTools.ShellNative.dll'
+    [IO.Directory]::CreateDirectory((Split-Path $legacyHelper -Parent)) | Out-Null
+    [IO.File]::WriteAllText($legacyHelper, 'Locked old native helper with different bytes')
+    $legacyHash = (Get-FileHash -LiteralPath $legacyHelper).Hash
+    $heldLegacy = [IO.File]::Open($legacyHelper, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { & (Join-Path $root 'install.ps1') @arguments -ChecksumPath $ChecksumPath | Out-Null }
+    finally { $heldLegacy.Dispose() }
+    Assert-True ((Get-FileHash -LiteralPath $legacyHelper).Hash -eq $legacyHash) 'Legacy upgrade leaves a locked, different DLL untouched'
+    $installedRoot = (Get-Content -LiteralPath (Join-Path $destination 'current.json') -Raw | ConvertFrom-Json).path
     $firstProfile = [IO.File]::ReadAllText($testProfilePath)
     Assert-True ($firstProfile.StartsWith($originalProfile)) 'Release installation preserves the existing profile'
     Assert-True ([regex]::Matches($firstProfile, '(?m)^# >>> wttools >>>').Count -eq 1) 'Release installation adds one managed profile block'
-    Assert-True ([IO.File]::Exists((Join-Path $destination 'powershell/Startup.ps1'))) 'Release installs the lazy startup script'
-    Assert-True ([IO.File]::Exists((Join-Path $destination 'host/wttools-host.exe'))) 'Release installs the compiled host'
-    Assert-True ([IO.File]::Exists((Join-Path $destination 'LICENSE'))) 'Installed application retains its MIT license'
+    Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'powershell/Startup.ps1'))) 'Release installs the lazy startup script'
+    Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'host/wttools-host.exe'))) 'Release installs the compiled host'
+    Assert-True ([IO.File]::Exists((Join-Path $installedRoot 'LICENSE'))) 'Installed application retains its MIT license'
     Assert-True (@(Get-ChildItem -LiteralPath (Split-Path $testProfilePath -Parent) -Filter '*.bak').Count -gt 0) 'Existing profile is backed up'
 
-    if ([IO.File]::Exists((Join-Path $destination 'host/coreclr.dll'))) {
+    if ([IO.File]::Exists((Join-Path $installedRoot 'host/coreclr.dll'))) {
         # Real release packages must run from the installed directory with
         # their own runtime. This never creates a Terminal or panel window.
         $pipeName = 'wtpocket-release-test-' + [guid]::NewGuid().ToString('N')
         $healthState = Join-Path $testRoot 'host-health'
-        $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $destination 'host/wttools-host.exe'))
+        $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $installedRoot 'host/wttools-host.exe'))
         $start.UseShellExecute = $false
-        foreach ($argument in @($pipeName, $healthState, (Join-Path $destination 'powershell/WtTools.psm1'),
+        foreach ($argument in @($pipeName, $healthState, (Join-Path $installedRoot 'powershell/WtTools.psm1'),
                 (Join-Path $PSHOME 'pwsh.exe'))) { $start.ArgumentList.Add($argument) }
         $runningHost = [Diagnostics.Process]::Start($start)
         $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
@@ -92,11 +102,58 @@ try {
 
     # Reinstall while the native helper is held open, just as an existing shell
     # holds it. Identical helper bytes must not require closing users' shells.
-    $helper = Join-Path $destination 'host/WtTools.ShellNative.dll'
+    $helper = Join-Path $installedRoot 'host/WtTools.ShellNative.dll'
     $held = [IO.File]::Open($helper, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try { & (Join-Path $root 'install.ps1') @arguments -ChecksumPath $ChecksumPath | Out-Null }
     finally { $held.Dispose() }
     Assert-True ([IO.File]::ReadAllText($testProfilePath) -ceq $firstProfile) 'Release reinstall is idempotent even with the helper in use'
+    Assert-True ((Get-Content -LiteralPath (Join-Path $destination 'current.json') -Raw | ConvertFrom-Json).path -ceq $installedRoot) 'Identical reinstall reuses the immutable payload'
+
+    # Upgrade between versioned payloads, with the previous helper held open.
+    $upgradeStage = Join-Path $testRoot 'upgrade-package'
+    [IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $upgradeStage)
+    $changedHelper = Join-Path $upgradeStage 'artifacts/host/WtTools.ShellNative.dll'
+    [IO.File]::WriteAllText($changedHelper, 'Different helper bytes for upgrade regression; never executed')
+    $oldHelperHash = (Get-FileHash -LiteralPath $helper).Hash
+    $held = [IO.File]::Open($helper, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        & (Join-Path $upgradeStage 'scripts/Install-WtTools.ps1') -Destination $destination -ProfilePath $testProfilePath -StateRoot $state | Out-Null
+    } finally { $held.Dispose() }
+    $upgradedRoot = (Get-Content -LiteralPath (Join-Path $destination 'current.json') -Raw | ConvertFrom-Json).path
+    Assert-True ($upgradedRoot -cne $installedRoot) 'Changed payload activates a new directory'
+    Assert-True ((Get-FileHash -LiteralPath $helper).Hash -eq $oldHelperHash) 'Versioned upgrade preserves the locked old helper'
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $upgradedRoot 'host/WtTools.ShellNative.dll')).Hash -eq (Get-FileHash -LiteralPath $changedHelper).Hash) 'New version contains the changed helper'
+    Assert-True ([IO.File]::ReadAllText($testProfilePath).Contains($upgradedRoot.Replace("'", "''"))) 'Profile switches to the verified new payload'
+
+    $profileBeforeFailure = [IO.File]::ReadAllText($testProfilePath)
+    $currentBeforeFailure = [IO.File]::ReadAllText((Join-Path $destination 'current.json'))
+    [IO.File]::Delete((Join-Path $upgradeStage 'powershell/Startup.ps1'))
+    $rejected = $false
+    try {
+        & (Join-Path $upgradeStage 'scripts/Install-WtTools.ps1') -Destination $destination -ProfilePath $testProfilePath -StateRoot $state | Out-Null
+    } catch { $rejected = $true }
+    Assert-True $rejected 'Incomplete upgrade is rejected'
+    Assert-True ([IO.File]::ReadAllText($testProfilePath) -ceq $profileBeforeFailure) 'Failed upgrade preserves the active profile'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $destination 'current.json')) -ceq $currentBeforeFailure) 'Failed upgrade preserves active version metadata'
+
+    # Return to the real payload before testing uninstall (the changed DLL is
+    # intentionally not a valid assembly and must never be imported).
+    & (Join-Path $root 'install.ps1') @arguments -ChecksumPath $ChecksumPath | Out-Null
+
+    # A failure at activation must also roll back current.json, not leave
+    # uninstall targeting a version the profile never activated.
+    Copy-Item -LiteralPath (Join-Path $installedRoot 'powershell/Startup.ps1') -Destination (Join-Path $upgradeStage 'powershell/Startup.ps1')
+    $currentBeforeFailure = [IO.File]::ReadAllText((Join-Path $destination 'current.json'))
+    $heldProfile = [IO.File]::Open($testProfilePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $rejected = $false
+    try {
+        try {
+            & (Join-Path $upgradeStage 'scripts/Install-WtTools.ps1') -Destination $destination -ProfilePath $testProfilePath -StateRoot $state | Out-Null
+        } catch { $rejected = $true }
+    } finally { $heldProfile.Dispose() }
+    Assert-True $rejected 'Profile activation failure is reported'
+    Assert-True ([IO.File]::ReadAllText($testProfilePath) -ceq $firstProfile) 'Profile activation failure leaves the old profile intact'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $destination 'current.json')) -ceq $currentBeforeFailure) 'Profile activation failure rolls back current.json'
 
     $uninstaller = Join-Path $root 'scripts/Uninstall-WtTools.ps1'
     & $uninstaller -Destination $destination -ProfilePath $testProfilePath -StateRoot $state | Out-Null
@@ -125,7 +182,8 @@ function Invoke-WebRequest {
     Copy-Item -LiteralPath $source -Destination $OutFile
 }
 Get-Content -LiteralPath $FixtureInstallerPath -Raw | Invoke-Expression
-if (-not [IO.File]::Exists((Join-Path $FixtureRoot 'wttools/app/LICENSE'))) { throw 'Pipeline installer did not complete' }
+$active = (Get-Content -LiteralPath (Join-Path $FixtureRoot 'wttools/app/current.json') -Raw | ConvertFrom-Json).path
+if (-not [IO.File]::Exists((Join-Path $active 'LICENSE'))) { throw 'Pipeline installer did not complete' }
 if (-not [IO.File]::ReadAllText($PROFILE).Contains('# >>> wttools >>>')) { throw 'Pipeline installer did not configure the fixture profile' }
 'PASS: README pipeline installer execution mode.'
 '@

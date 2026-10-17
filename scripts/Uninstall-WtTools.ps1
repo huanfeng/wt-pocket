@@ -6,7 +6,11 @@ param(
     [string] $StateRoot = (Join-Path (Split-Path $PROFILE.CurrentUserAllHosts -Parent) 'wttools')
 )
 $ErrorActionPreference = 'Stop'
-$module = Join-Path $Destination 'powershell/WtTools.psm1'
+$current = Join-Path $Destination 'current.json'
+$installedRoot = if ([IO.File]::Exists($current)) {
+    (Get-Content -LiteralPath $current -Raw | ConvertFrom-Json).path
+} else { $Destination }
+$module = Join-Path $installedRoot 'powershell/WtTools.psm1'
 if (Test-Path -LiteralPath $module) {
     Import-Module $module
     Stop-WtTools -StateRoot $StateRoot

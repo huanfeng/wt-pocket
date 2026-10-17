@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.2
+
+- Install each distinct payload in a separate content-addressed directory, avoiding locked DLL overwrites during upgrades.
+- Migrate existing flat installations without closing PowerShell sessions or stopping running panels.
+- Verify staged files before switching the profile; reuse identical payloads on reinstall and retain old versions for live sessions.
+- Add regression coverage for locked legacy DLLs with different contents and upgrades between versioned payloads.
+
 ## v0.1.1
 
 - Fix version validation when running the one-line `irm | iex` installer.

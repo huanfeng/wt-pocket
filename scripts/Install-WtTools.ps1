@@ -11,17 +11,14 @@ $root = Split-Path $PSScriptRoot -Parent
 $Destination = [IO.Path]::GetFullPath($Destination)
 $ProfilePath = [IO.Path]::GetFullPath($ProfilePath)
 $StateRoot = [IO.Path]::GetFullPath($StateRoot)
-$installedModule = Join-Path $Destination 'powershell/WtTools.psm1'
-if (Test-Path -LiteralPath $installedModule) {
-    Import-Module $installedModule
-    Stop-WtTools -StateRoot $StateRoot
-    Remove-Module WtTools
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ((Test-Path -LiteralPath (Join-Path $StateRoot 'host.json')) -and [DateTime]::UtcNow -lt $deadline) {
-        Start-Sleep -Milliseconds 50
-    }
-    Start-Sleep -Milliseconds 100
-}
+$lockKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes($Destination.TrimEnd('\').ToUpperInvariant())))
+$installMutex = [Threading.Mutex]::new($false, ('Local\wtpocket-install-' + $lockKey))
+$lockAcquired = $false
+try {
+    try { $lockAcquired = $installMutex.WaitOne(30000) }
+    catch [Threading.AbandonedMutexException] { $lockAcquired = $true }
+    if (-not $lockAcquired) { throw 'Another WTPocket installation is still running. Please retry shortly.' }
 $hostOutput = Join-Path $root 'artifacts/host'
 if ((-not (Test-Path -LiteralPath (Join-Path $hostOutput 'wttools-host.exe')) -or
         -not (Test-Path -LiteralPath (Join-Path $hostOutput 'WtTools.ShellNative.dll'))) -and
@@ -31,34 +28,79 @@ if ((-not (Test-Path -LiteralPath (Join-Path $hostOutput 'wttools-host.exe')) -o
 if (-not [IO.File]::Exists((Join-Path $hostOutput 'WtTools.ShellNative.dll'))) {
     throw 'wttools native API assembly is missing. Run scripts/Build.ps1 with the .NET 10 SDK, then reinstall wttools.'
 }
+# Inventory and hash the entire payload before touching the installation.
+# Every distinct payload gets its own directory: loaded DLLs are never replaced.
 $files = @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1', 'src/PanelHost.cs', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1')
-foreach ($relative in $files) {
-    $target = Join-Path $Destination $relative
-    [IO.Directory]::CreateDirectory((Split-Path $target -Parent)) | Out-Null
-    if ([IO.Path]::GetFullPath((Join-Path $root $relative)) -ne [IO.Path]::GetFullPath($target)) {
-        Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $target -Force
+$payload = @{}
+foreach ($relative in $files) { $payload[$relative] = Join-Path $root $relative }
+foreach ($file in (Get-ChildItem -LiteralPath $hostOutput -File | Where-Object Extension -ne '.pdb')) {
+    $payload['host/' + $file.Name] = $file.FullName
+}
+if (-not $payload.ContainsKey('host/wttools-host.exe')) { throw 'wttools host executable is missing. Run scripts/Build.ps1 first.' }
+$hashes = @{}
+$manifest = foreach ($relative in ($payload.Keys | Sort-Object)) {
+    $hashes[$relative] = (Get-FileHash -LiteralPath $payload[$relative] -Algorithm SHA256).Hash
+    "$relative $($hashes[$relative])"
+}
+$identity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes(($manifest -join "`n")))).ToLowerInvariant()
+$versions = Join-Path $Destination 'versions'
+$installedRoot = Join-Path $versions $identity
+$complete = [IO.Directory]::Exists($installedRoot)
+if ($complete) {
+    foreach ($relative in $payload.Keys) {
+        $candidate = Join-Path $installedRoot $relative
+        if (-not [IO.File]::Exists($candidate) -or
+            (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashes[$relative]) {
+            $complete = $false
+            # Repair a damaged installation without overwriting files that may
+            # already be loaded by another process.
+            $installedRoot = Join-Path $versions ($identity + '-' + [guid]::NewGuid().ToString('N'))
+            break
+        }
     }
 }
-if (Test-Path -LiteralPath (Join-Path $hostOutput 'wttools-host.exe')) {
-    $target = Join-Path $Destination 'host'
-    [IO.Directory]::CreateDirectory($target) | Out-Null
-    Get-ChildItem -LiteralPath $hostOutput -File | Where-Object Extension -ne '.pdb' | ForEach-Object {
-        $targetFile = Join-Path $target $_.Name
-        # Open shells keep the native helper loaded. Identical files need no
-        # replacement and can safely stay in use during a host-only update.
-        if (-not ([IO.File]::Exists($targetFile) -and
-                (Get-FileHash -LiteralPath $_.FullName).Hash -eq (Get-FileHash -LiteralPath $targetFile).Hash)) {
-            try {
-                Copy-Item -LiteralPath $_.FullName -Destination $targetFile -Force
-            } catch {
-                throw "Could not update '$targetFile'. If it is in use, close existing PowerShell sessions and Panels, then run the installer from a fresh PowerShell session. $($_.Exception.Message)"
+if (-not $complete) {
+    $staging = Join-Path $versions ('.staging-' + [guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($staging) | Out-Null
+    try {
+        foreach ($relative in $payload.Keys) {
+            $target = Join-Path $staging $relative
+            [IO.Directory]::CreateDirectory((Split-Path $target -Parent)) | Out-Null
+            Copy-Item -LiteralPath $payload[$relative] -Destination $target
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $hashes[$relative]) {
+                throw "Installation verification failed: $relative"
             }
+        }
+        [IO.Directory]::Move($staging, $installedRoot)
+    } finally {
+        # Only our newly allocated staging directory can be removed.
+        if ([IO.Directory]::Exists($staging)) {
+            $stagingPath = [IO.Path]::GetFullPath($staging)
+            $versionsPrefix = [IO.Path]::GetFullPath($versions).TrimEnd('\') + '\'
+            if (-not $stagingPath.StartsWith($versionsPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Refusing cleanup outside the versions directory.'
+            }
+            Remove-Item -LiteralPath $stagingPath -Recurse -Force
         }
     }
 }
 
-$moduleLiteral = (Join-Path $Destination 'powershell/WtTools.psm1').Replace("'", "''")
-$startupLiteral = (Join-Path $Destination 'powershell/Startup.ps1').Replace("'", "''")
+function Write-AtomicText([string] $Path, [string] $Content) {
+    [IO.Directory]::CreateDirectory((Split-Path $Path -Parent)) | Out-Null
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, $Content, [Text.UTF8Encoding]::new($false))
+        [IO.File]::Move($temporary, $Path, $true)
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+
+# Keep the documented uninstall entry point stable across payload versions.
+Write-AtomicText (Join-Path $Destination 'scripts/Uninstall-WtTools.ps1') ([IO.File]::ReadAllText((Join-Path $installedRoot 'scripts/Uninstall-WtTools.ps1')))
+$moduleLiteral = (Join-Path $installedRoot 'powershell/WtTools.psm1').Replace("'", "''")
+$startupLiteral = (Join-Path $installedRoot 'powershell/Startup.ps1').Replace("'", "''")
 $block = @'
 # >>> wttools >>>
 if ($env:WT_SESSION) {
@@ -89,8 +131,22 @@ if ($updated -cne $text) {
         Copy-Item -LiteralPath $ProfilePath -Destination $backup
         Write-Output "Profile backup: $backup"
     }
-    [IO.Directory]::CreateDirectory((Split-Path $ProfilePath -Parent)) | Out-Null
-    [IO.File]::WriteAllText($ProfilePath, $updated, [Text.UTF8Encoding]::new($false))
 }
-Write-Output "Installed wttools to $Destination"
+$currentPath = Join-Path $Destination 'current.json'
+$previousCurrent = if ([IO.File]::Exists($currentPath)) { [IO.File]::ReadAllText($currentPath) } else { $null }
+Write-AtomicText $currentPath (@{ path = $installedRoot } | ConvertTo-Json)
+try {
+    # The profile is the activation point. It only references verified files.
+    if ($updated -cne $text) { Write-AtomicText $ProfilePath $updated }
+} catch {
+    if ($null -ne $previousCurrent) { Write-AtomicText $currentPath $previousCurrent }
+    else { [IO.File]::Delete($currentPath) }
+    throw
+}
+Write-Output "Installed wttools to $installedRoot"
+Write-Output 'Existing shells and panels keep using their current version; no loaded DLLs are overwritten.'
 Write-Output "Open a new PowerShell 7 tab in Windows Terminal, then press Alt+F at the prompt."
+} finally {
+    if ($lockAcquired) { $installMutex.ReleaseMutex() }
+    $installMutex.Dispose()
+}

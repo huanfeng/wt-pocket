@@ -71,7 +71,8 @@ try {
     $tokens = $null; $errors = $null
     [Management.Automation.Language.Parser]::ParseFile($fixtureProfile, [ref]$tokens, [ref]$errors) | Out-Null
     Assert-True ($errors.Count -eq 0) 'Installed profile handles apostrophes in paths'
-    $installedModule = Join-Path $destination 'powershell/WtTools.psm1'
+    $installedRoot = (Get-Content -LiteralPath (Join-Path $destination 'current.json') -Raw | ConvertFrom-Json).path
+    $installedModule = Join-Path $installedRoot 'powershell/WtTools.psm1'
     $temporarilyMissing = $installedModule + '.missing'
     Move-Item -LiteralPath $installedModule -Destination $temporarilyMissing
     $env:WT_SESSION = 'missing-module-test'
