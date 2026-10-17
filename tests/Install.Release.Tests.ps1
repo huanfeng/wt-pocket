@@ -103,6 +103,40 @@ try {
     Assert-True ([IO.File]::ReadAllText($testProfilePath) -ceq $originalProfile) 'Release uninstall restores the existing profile exactly'
     Assert-True ([IO.File]::Exists($helper)) 'Uninstall retains installed files'
 
+    # Test exactly the README's pipeline-to-iex execution mode, in a child
+    # process with a synthetic host profile and mocked network downloads.
+    $pipelineFixture = Join-Path $testRoot 'PipelineInstall.ps1'
+    $pipelineCode = @'
+param($FixtureInstallerPath, $FixtureZipPath, $FixtureChecksumPath, $FixtureRoot)
+$ErrorActionPreference = 'Stop'
+$PROFILE = Join-Path $FixtureRoot 'Microsoft.PowerShell_profile.ps1'
+$PROFILE = $PROFILE | Add-Member NoteProperty CurrentUserAllHosts (Join-Path $FixtureRoot 'profile.ps1') -PassThru
+$PROFILE = $PROFILE | Add-Member NoteProperty CurrentUserCurrentHost ([string]$PROFILE) -PassThru
+function wt.exe { throw 'This fixture must not start a terminal.' }
+function Invoke-RestMethod {
+    param($Uri, $Headers)
+    $name = [IO.Path]::GetFileName($FixtureZipPath)
+    if ($name -notmatch '^wtpocket-(v.+)-win-(?:x64|arm64)\.zip$') { throw 'Unexpected fixture ZIP name' }
+    @{ tag_name = $Matches[1] }
+}
+function Invoke-WebRequest {
+    param($Uri, $OutFile, $Headers)
+    $source = if ($Uri.EndsWith('/SHA256SUMS')) { $FixtureChecksumPath } else { $FixtureZipPath }
+    Copy-Item -LiteralPath $source -Destination $OutFile
+}
+Get-Content -LiteralPath $FixtureInstallerPath -Raw | Invoke-Expression
+if (-not [IO.File]::Exists((Join-Path $FixtureRoot 'wttools/app/LICENSE'))) { throw 'Pipeline installer did not complete' }
+if (-not [IO.File]::ReadAllText($PROFILE).Contains('# >>> wttools >>>')) { throw 'Pipeline installer did not configure the fixture profile' }
+'PASS: README pipeline installer execution mode.'
+'@
+    [IO.File]::WriteAllText($pipelineFixture, $pipelineCode)
+    $pipelineRoot = Join-Path $testRoot 'pipeline-host'
+    [IO.Directory]::CreateDirectory($pipelineRoot) | Out-Null
+    & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -File $pipelineFixture `
+        -FixtureInstallerPath (Join-Path $root 'install.ps1') -FixtureZipPath $ArchivePath `
+        -FixtureChecksumPath $ChecksumPath -FixtureRoot $pipelineRoot | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'README pipeline-to-iex installation works with default parameters'
+
     $malicious = Join-Path $testRoot 'traversal.zip'
     $zip = [IO.Compression.ZipFile]::Open($malicious, [IO.Compression.ZipArchiveMode]::Create)
     try {

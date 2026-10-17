@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.1
+
+- Fix version validation when running the one-line `irm | iex` installer.
+- Test the documented pipeline installation mode in an isolated host profile.
+
 ## v0.1.0
 
 - Toggle a separate Windows Terminal panel with Alt+F, starting in the calling PowerShell session's directory.

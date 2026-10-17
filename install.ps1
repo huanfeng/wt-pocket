@@ -11,7 +11,6 @@ Installs WTPocket from a verified GitHub release, without administrator access.
 #>
 [CmdletBinding()]
 param(
-    [ValidatePattern('^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
     [string] $Version,
     [string] $ArchivePath,
     [string] $ChecksumPath,
@@ -21,6 +20,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Validate here instead of attaching a parameter attribute: Invoke-Expression
+# applies attributes to the caller's initially empty variables before binding.
+if ($Version -and $Version -notmatch '^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+    throw "Invalid WTPocket version '$Version'. Use a version such as v0.1.0."
+}
 if (-not $IsWindows) { throw 'WTPocket requires Windows and PowerShell 7.4 or later.' }
 if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
     throw 'Windows Terminal was not found. Install Windows Terminal and enable its wt.exe app execution alias, then retry.'
