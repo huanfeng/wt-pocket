@@ -159,11 +159,11 @@ pwsh -NoProfile -File ./tests/Panel.Integration.Tests.ps1 -MonitorIndex 1
 
 GitHub Actions 在推送和 Pull Request 时构建并运行自动检查。真实桌面交互测试保留为本地验证，不以无桌面的 CI 结果替代。
 
-推送 `v*` 版本标签触发 Release 工作流，在 Windows **x64 / ARM64** 机器上分别构建和测试原生程序，并上传 ZIP 和合并后的 SHA-256 校验文件到 GitHub Releases。发布前应先确保 `main` 的 CI 通过，并在实际 WT 环境完成交互验证。
+推送 `v*` 版本标签触发 Release 工作流，在 Windows **x64 / ARM64** 机器上分别构建和测试原生程序，并上传 ZIP 和合并后的 SHA-256 校验文件到 GitHub Releases。Release 工作流会先等待同一提交的 CI 成功，失败或超时则不发布；仍应在实际 WT 环境完成交互验证。
 
 ```powershell
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z   # 与 Cargo.toml、CHANGELOG 中的版本一致
+git push origin vX.Y.Z
 ```
 
 ## 源码结构

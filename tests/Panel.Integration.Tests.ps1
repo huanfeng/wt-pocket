@@ -116,9 +116,10 @@ function Send-Request([hashtable] $Request) {
         if (-not $reply.ok) { throw $reply.error }
     } finally { $pipe.Dispose() }
 }
-function Literal([string] $Value) { "'" + $Value.Replace("'", "''") + "'" }
+# PowerShell also treats the curly single quotes as string delimiters.
+function Literal([string] $Value) { "'" + [regex]::Replace($Value, "['‘’‚‛]", '$0$0') + "'" }
 try {
-    $special = Join-Path $testRoot "中文 a'b; [x] ``literal"
+    $special = Join-Path $testRoot "中文 a'b’; calc; ‘b; [x] ``literal"
     [IO.Directory]::CreateDirectory($special) | Out-Null
     $module = Join-Path $root 'powershell/WtTools.psm1'
     Import-Module $module

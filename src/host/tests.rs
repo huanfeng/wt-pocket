@@ -186,3 +186,18 @@ fn dpi_drag_uses_physical_pixels_on_each_monitor_and_restores_caller() {
         );
     }
 }
+
+#[test]
+fn log_rotates_after_size_limit_and_keeps_one_generation() {
+    let dir = std::env::temp_dir().join(format!("wttools-log-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("host.log"), vec![b'x'; MAX_LOG_BYTES as usize]).unwrap();
+    append_log(&dir, "fresh");
+    assert_eq!(
+        fs::metadata(dir.join("host.log.old")).unwrap().len(),
+        MAX_LOG_BYTES
+    );
+    let current = fs::read_to_string(dir.join("host.log")).unwrap();
+    assert!(current.trim_end().ends_with("fresh") && current.lines().count() == 1);
+    fs::remove_dir_all(dir).unwrap();
+}

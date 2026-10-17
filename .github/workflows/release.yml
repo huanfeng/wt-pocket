@@ -7,7 +7,31 @@ permissions:
   contents: read
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Require a successful CI run for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            read -r status conclusion < <(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --event push --limit 1               --json status,conclusion -q '.[0] | "\(.status // "none") \(.conclusion // "none")"' || echo "none none")
+            echo "CI status=$status conclusion=$conclusion"
+            if [[ "$status" == completed ]]; then
+              [[ "$conclusion" == success ]] && exit 0
+              echo "CI did not succeed for $GITHUB_SHA" >&2; exit 1
+            fi
+            sleep 30
+          done
+          echo "Timed out waiting for CI on $GITHUB_SHA" >&2; exit 1
+
   package:
+    needs: gate
     strategy:
       matrix:
         include:

@@ -35,6 +35,24 @@ fn version() -> &'static str {
     option_env!("WTPOCKET_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+const MAX_LOG_BYTES: u64 = 1 << 20;
+
+/// Appends a timestamped line to `host.log`; past 1 MiB the file becomes
+/// `host.log.old` (one generation kept), so long-lived hosts cannot grow it forever.
+fn append_log(state: &Path, line: &str) {
+    let path = state.join("host.log");
+    if fs::metadata(&path).is_ok_and(|m| m.len() >= MAX_LOG_BYTES) {
+        let _ = fs::rename(&path, state.join("host.log.old"));
+    }
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = writeln!(file, "{now} {line}");
+    }
+}
+
 #[derive(Clone)]
 struct Panel {
     window: isize,
@@ -58,17 +76,7 @@ struct Host {
 
 impl Host {
     fn log(&self, error: &str) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.state.join("host.log"))
-        {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let _ = writeln!(file, "{now} {error}");
-        }
+        append_log(&self.state, error);
     }
 
     fn toggle(&self, request: Request) -> Result<(), String> {
@@ -456,13 +464,7 @@ fn main() -> ExitCode {
         Err(error) => {
             if let Some(state) = arguments.get(1) {
                 let _ = fs::create_dir_all(state);
-                if let Ok(mut log) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(Path::new(state).join("host.log"))
-                {
-                    let _ = writeln!(log, "{error}");
-                }
+                append_log(Path::new(state), &error.to_string());
             }
             ExitCode::FAILURE
         }
