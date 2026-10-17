@@ -31,7 +31,7 @@ if ((-not (Test-Path -LiteralPath (Join-Path $hostOutput 'wttools-host.exe')) -o
 if (-not [IO.File]::Exists((Join-Path $hostOutput 'WtTools.ShellNative.dll'))) {
     throw 'wttools native API assembly is missing. Run scripts/Build.ps1 with the .NET 10 SDK, then reinstall wttools.'
 }
-$files = @('powershell/WtTools.psm1', 'powershell/Startup.ps1', 'src/PanelHost.cs', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1')
+$files = @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1', 'src/PanelHost.cs', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1')
 foreach ($relative in $files) {
     $target = Join-Path $Destination $relative
     [IO.Directory]::CreateDirectory((Split-Path $target -Parent)) | Out-Null

@@ -105,6 +105,7 @@ try {
     }
     Expand-Archive -LiteralPath $ArchivePath -DestinationPath $extractionRoot
     foreach ($requiredFile in @(
+        'LICENSE', 'README.md',
         'scripts/Install-WtTools.ps1', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1',
         'powershell/Startup.ps1', 'powershell/WtTools.psm1', 'src/PanelHost.cs',
         'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll'

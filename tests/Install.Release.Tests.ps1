@@ -24,7 +24,7 @@ try {
         foreach ($relative in @('powershell', 'scripts', 'src', 'artifacts/host')) {
             [IO.Directory]::CreateDirectory((Join-Path $stage $relative)) | Out-Null
         }
-        foreach ($relative in @('powershell/WtTools.psm1', 'powershell/Startup.ps1',
+        foreach ($relative in @('LICENSE', 'README.md', 'powershell/WtTools.psm1', 'powershell/Startup.ps1',
                 'scripts/Install-WtTools.ps1', 'scripts/Uninstall-WtTools.ps1', 'scripts/Start-WtToolsHost.ps1',
                 'src/PanelHost.cs', 'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll')) {
             Copy-Item -LiteralPath (Join-Path $root $relative) -Destination (Join-Path $stage $relative)
@@ -59,6 +59,7 @@ try {
     Assert-True ([regex]::Matches($firstProfile, '(?m)^# >>> wttools >>>').Count -eq 1) 'Release installation adds one managed profile block'
     Assert-True ([IO.File]::Exists((Join-Path $destination 'powershell/Startup.ps1'))) 'Release installs the lazy startup script'
     Assert-True ([IO.File]::Exists((Join-Path $destination 'host/wttools-host.exe'))) 'Release installs the compiled host'
+    Assert-True ([IO.File]::Exists((Join-Path $destination 'LICENSE'))) 'Installed application retains its MIT license'
     Assert-True (@(Get-ChildItem -LiteralPath (Split-Path $testProfilePath -Parent) -Filter '*.bak').Count -gt 0) 'Existing profile is backed up'
 
     if ([IO.File]::Exists((Join-Path $destination 'host/coreclr.dll'))) {
