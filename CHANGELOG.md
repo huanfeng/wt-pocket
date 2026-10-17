@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1
+
+- Fix a command-injection path in the panel startup script: a directory name containing curly single quotes (U+2018/2019/201A/201B) could break out of the quoted literal. Paths are now passed as Base64, so no quoting rules apply.
+- Rotate `host.log` at 1 MiB, keeping one previous generation.
+- Require a successful CI run on the tagged commit before the release workflow publishes.
+- Test panel creation from a directory containing curly quotes and shell metacharacters in real Windows Terminal.
+
 ## v0.2.0
 
 - Replace the .NET panel controller with a native Rust executable; keep the lightweight PowerShell integration and existing pipe protocol.

@@ -126,7 +126,7 @@ pwsh -NoProfile -File ./scripts/Install-WtTools.ps1
 
 默认构建当前机器架构。交叉构建 ARM64 还需对应的 Rust target 和 Visual Studio ARM64 工具；CI/Release 分别在 x64、ARM64 Windows 机器上原生构建和测试。
 
-本机打包可执行 `./scripts/Package.ps1 -Version 0.2.0 -Runtime win-x64`。生成许可声明需要 `rustup component add rust-docs`；这只影响开发机打包，不是用户安装依赖。
+本机打包可执行 `./scripts/Package.ps1 -Version 0.2.1 -Runtime win-x64`。生成许可声明需要 `rustup component add rust-docs`；这只影响开发机打包，不是用户安装依赖。
 
 自动检查不依赖 Pester：
 
