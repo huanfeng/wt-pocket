@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.2
 
 - Command-line output is now Chinese or English according to the Windows display language (override with `WTPOCKET_LANG=zh|en`), and `help` and `install` print a short hotkey reference.
 
