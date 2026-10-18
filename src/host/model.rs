@@ -53,24 +53,16 @@ pub fn center(parent: Bounds, work: Bounds) -> Bounds {
     .fit(work)
 }
 
-/// Builds the `-EncodedCommand` payload. Caller-controlled strings are embedded
-/// as Base64 UTF-8, an alphabet with no characters PowerShell treats as quotes
-/// (including the curly ones), so no literal can break out of the script.
-pub fn bootstrap(directory: &str, module: &str, state: &str) -> String {
-    fn quote(value: &str) -> String {
-        format!(
-            "([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')))",
-            STANDARD.encode(value)
-        )
-    }
+/// Builds the `-EncodedCommand` payload. The directory is embedded as Base64
+/// UTF-8, an alphabet with no characters PowerShell treats as quotes (including
+/// the curly ones), so it can never break out of the script.
+pub fn bootstrap(directory: &str) -> String {
     let code = format!(
         "$env:WTTOOLS_PANEL = '1'; \
          foreach ($p in @($PROFILE.AllUsersAllHosts,$PROFILE.AllUsersCurrentHost,$PROFILE.CurrentUserAllHosts,$PROFILE.CurrentUserCurrentHost)) \
          {{ if (Test-Path -LiteralPath $p) {{ . $p }} }}; \
-         Import-Module -Name {}; Enable-WtTools -Panel -StateRoot {}; Set-Location -LiteralPath {}",
-        quote(module),
-        quote(state),
-        quote(directory)
+         Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')))",
+        STANDARD.encode(directory)
     );
     STANDARD.encode(
         code.encode_utf16()
@@ -118,26 +110,19 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_embeds_literals_as_base64() {
+    fn bootstrap_embeds_the_directory_as_base64() {
         let path = "D:\\中文 a'b; $(throw 'injection') [x] `literal \u{2019}; calc; \u{2018}";
-        let module = "C:\\a'b\\module.psm1";
-        let state = "C:\\state\u{201B}s";
-        let bytes = STANDARD.decode(bootstrap(path, module, state)).unwrap();
+        let bytes = STANDARD.decode(bootstrap(path)).unwrap();
         let units: Vec<u16> = bytes
             .chunks(2)
             .map(|p| u16::from_le_bytes([p[0], p[1]]))
             .collect();
         let code = String::from_utf16(&units).unwrap();
-        let literal = |v: &str| {
-            format!(
-                "([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')))",
-                STANDARD.encode(v)
-            )
-        };
         assert!(code.starts_with("$env:WTTOOLS_PANEL = '1';"));
-        assert!(code.contains(&format!("Import-Module -Name {}", literal(module))));
-        assert!(code.contains(&format!("-StateRoot {}", literal(state))));
-        assert!(code.ends_with(&format!("Set-Location -LiteralPath {}", literal(path))));
+        assert!(code.ends_with(&format!(
+            "Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}')))",
+            STANDARD.encode(path)
+        )));
         // Caller data must not appear in the script, so no quote can escape it.
         assert!(!code.contains("injection") && !code.contains("calc"));
         assert!(!code.contains(['\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}']));

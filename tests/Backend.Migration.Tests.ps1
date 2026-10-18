@@ -1,67 +1,107 @@
 #Requires -Version 7.4
-# Exercise legacy-backend handoff on the real pipe without opening WT windows.
+# Exercise legacy-backend handoff through `wtpocket open` without opening WT windows.
+# The toggle itself fails because no Windows Terminal is focused; that is expected.
 [CmdletBinding()]
-param([string] $LegacyHostPath)
+param()
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+$exe = Join-Path $root 'artifacts/host/wtpocket.exe'
+$pwshPath = Join-Path $PSHOME 'pwsh.exe'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wtpocket-migration-' + [guid]::NewGuid().ToString('N'))
 $checks = 0
 $runningHost = $null
+$newHost = $null
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
     $script:checks++
 }
-function Invoke-InvalidRequest {
-    $rejected = $false
-    try { & (Get-Module WtTools) { Send-WtToolsRequest @{ action = 'unknown' } } }
-    catch { $rejected = $_.Exception.Message -match 'Unknown action' }
-    Assert-True $rejected 'The module receives a response from the replacement backend'
+function Get-StatePipeName([string] $State) {
+    $key = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value + '|' + [IO.Path]::GetFullPath($State).ToUpperInvariant()
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key)))
+    'wttools-' + $hash.Substring(0, 24)
 }
-try {
-    [IO.Directory]::CreateDirectory($testRoot) | Out-Null
-    Import-Module (Join-Path $root 'powershell/WtTools.psm1')
-    & (Get-Module WtTools) { param($state) $script:StateRoot = $state } $testRoot
-    $pipeName = & (Get-Module WtTools) { Get-WtToolsPipeName }
-    $infoPath = Join-Path $testRoot 'host.json'
-    if (-not $LegacyHostPath) { $LegacyHostPath = Join-Path $root 'artifacts/host/wttools-host.exe' }
-    $start = [Diagnostics.ProcessStartInfo]::new($LegacyHostPath)
+function Start-FixtureHost([string] $PipeName) {
+    $start = [Diagnostics.ProcessStartInfo]::new($exe)
     $start.UseShellExecute = $false
-    foreach ($argument in @($pipeName, $testRoot, (Join-Path $root 'powershell/WtTools.psm1'), (Join-Path $PSHOME 'pwsh.exe'))) { $start.ArgumentList.Add($argument) }
-    $runningHost = [Diagnostics.Process]::Start($start)
+    $start.CreateNoWindow = $true
+    foreach ($argument in @('serve', $PipeName, $testRoot, $pwshPath)) { $start.ArgumentList.Add($argument) }
+    [Diagnostics.Process]::Start($start)
+}
+function Wait-HostInfo([Diagnostics.Process] $Process, [string] $Path) {
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
-    while (-not [IO.File]::Exists($infoPath)) {
-        if ($runningHost.HasExited -or [DateTime]::UtcNow -ge $deadline) { throw 'Fixture host did not start.' }
+    while (-not [IO.File]::Exists($Path)) {
+        if ($Process.HasExited -or [DateTime]::UtcNow -ge $deadline) { throw 'Fixture host did not start.' }
         Start-Sleep -Milliseconds 30
     }
+}
+function Invoke-Open {
+    $previous = $env:WT_SESSION
+    $env:WT_SESSION = '1'
+    try {
+        # `open` leaves the background host running, which inherits any pipe used to
+        # capture output and would keep the capture open forever; redirect to files.
+        $stdout = Join-Path $testRoot 'open.out'
+        $stderr = Join-Path $testRoot 'open.err'
+        $process = Start-Process $exe -ArgumentList @('open', $testRoot, '--state', $testRoot, '--session', 't', '--pwsh', $pwshPath) `
+            -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'wtpocket open did not return.' }
+        $process.WaitForExit()
+        $output = (Get-Content -LiteralPath $stdout, $stderr -Raw -ErrorAction SilentlyContinue) -join "`n"
+        [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output.Trim() }
+    } finally {
+        if ($null -eq $previous) { Remove-Item Env:WT_SESSION -ErrorAction SilentlyContinue } else { $env:WT_SESSION = $previous }
+    }
+}
+try {
+    Assert-True (Test-Path -LiteralPath $exe) 'artifacts/host/wtpocket.exe exists (run scripts/Build.ps1)'
+    [IO.Directory]::CreateDirectory($testRoot) | Out-Null
+    $pipeName = Get-StatePipeName $testRoot
+    $infoPath = Join-Path $testRoot 'host.json'
+    $runningHost = Start-FixtureHost $pipeName
+    Wait-HostInfo $runningHost $infoPath
     # v0.1.x metadata has exactly these fields. The wire shutdown protocol is
-    # unchanged; exercising it with a real host requires no old build/runtime.
-    [IO.File]::WriteAllText($infoPath, (@{ pid=$runningHost.Id; pipeName=$pipeName } | ConvertTo-Json))
+    # unchanged, so a real host with rewritten metadata stands in for a legacy one.
+    [IO.File]::WriteAllText($infoPath, (@{ pid = $runningHost.Id; pipeName = $pipeName } | ConvertTo-Json))
     $oldPid = $runningHost.Id
-    Invoke-InvalidRequest
+
+    $result = Invoke-Open
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'open reports the missing Windows Terminal after the handoff'
     Assert-True ($runningHost.WaitForExit(5000)) 'Legacy backend handoff uses graceful shutdown'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
-    Assert-True ($newInfo.backend -eq 'rust' -and $newInfo.pid -ne $oldPid) 'First new-shell request starts the Rust backend'
+    Assert-True ($newInfo.backend -eq 'rust') 'The replacement host records the rust backend'
+    Assert-True ($newInfo.pid -ne $oldPid) 'The replacement host is a new process'
     $runningHost.Dispose()
-    $runningHost = Get-Process -Id $newInfo.pid
-    Invoke-InvalidRequest
-    Assert-True ((Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json).pid -eq $newInfo.pid) 'Subsequent requests preserve the running Rust host'
-    Stop-WtTools -StateRoot $testRoot
-    Assert-True ($runningHost.WaitForExit(5000)) 'Replacement backend stops cleanly'
+    $runningHost = $null
+    $newHost = Get-Process -Id $newInfo.pid
+    Assert-True (-not $newHost.HasExited) 'The replacement host is running'
 
-    [IO.File]::WriteAllText($infoPath, (@{ pid=[int]::MaxValue; pipeName=$pipeName } | ConvertTo-Json))
-    Invoke-InvalidRequest
+    $result = Invoke-Open
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'A repeat open still reaches the host'
+    Assert-True ((Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json).pid -eq $newInfo.pid) 'Subsequent opens preserve the running Rust host'
+
+    $result = & $exe stop --state $testRoot 2>&1 | Out-String
+    Assert-True ($LASTEXITCODE -eq 0) 'stop succeeds'
+    Assert-True ($newHost.WaitForExit(5000)) 'Replacement backend stops cleanly'
+    Assert-True (-not (Test-Path -LiteralPath $infoPath)) 'stop removes host metadata'
+
+    # Stale metadata from a crashed legacy host must not block startup.
+    [IO.File]::WriteAllText($infoPath, (@{ pid = [int]::MaxValue; pipeName = $pipeName } | ConvertTo-Json))
+    $newHost.Dispose()
+    $result = Invoke-Open
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'open reaches a fresh host despite stale legacy metadata'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
     Assert-True ($newInfo.backend -eq 'rust') 'Stale legacy metadata does not prevent Rust startup'
-    $runningHost.Dispose()
-    $runningHost = Get-Process -Id $newInfo.pid
-    Stop-WtTools -StateRoot $testRoot
-    Assert-True ($runningHost.WaitForExit(5000)) 'Host started from stale metadata stops cleanly'
+    $newHost = Get-Process -Id $newInfo.pid
+    $null = & $exe stop --state $testRoot 2>&1
+    Assert-True ($newHost.WaitForExit(5000)) 'Host started from stale metadata stops cleanly'
     Write-Output "PASS: $checks backend migration checks (no Terminal windows)."
 } finally {
-    if (Get-Module WtTools) { Stop-WtTools -StateRoot $testRoot; Remove-Module WtTools }
-    if ($runningHost) {
-        if (-not $runningHost.HasExited) { $runningHost.Kill(); $runningHost.WaitForExit() }
-        $runningHost.Dispose()
+    $null = & $exe stop --state $testRoot 2>&1
+    foreach ($process in @($runningHost, $newHost)) {
+        if ($process) {
+            if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+            $process.Dispose()
+        }
     }
     $resolved = [IO.Path]::GetFullPath($testRoot)
     $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

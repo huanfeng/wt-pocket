@@ -1,7 +1,14 @@
 #Requires -Version 7.4
 # Opens dedicated test terminal windows and closes only those windows.
+# The source terminal runs the shipped Startup.ps1 Alt+F handler against
+# artifacts/host/wtpocket.exe with an isolated state directory.
+#   -ExerciseKeyboard       focus the panel and press real Alt+F (needs an idle desktop)
+#   -MonitorIndex N         place the source terminal on monitor N first
+#   -VerifyTitleBarRestore  opt-in: temporarily adds WTPocket's key binding to the real
+#                           Windows Terminal settings.json (always restored from a backup,
+#                           hash verified) and checks an orphaned panel regains its tab row.
 [CmdletBinding()]
-param([switch] $ExerciseKeyboard, [int] $MonitorIndex = -1)
+param([switch] $ExerciseKeyboard, [int] $MonitorIndex = -1, [switch] $VerifyTitleBarRestore)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Add-Type -TypeDefinition @'
@@ -84,26 +91,29 @@ public static class WtToolsWindowProbe {
     }
 }
 '@
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wttools-live-' + [guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wtpocket-live-' + [guid]::NewGuid().ToString('N'))
 [WtToolsWindowProbe]::SetThreadDpiAwarenessContext([IntPtr]::new(-4)) | Out-Null
 $sourceTitle = 'wttools-test-source-' + [guid]::NewGuid().ToString('N')
-$source = [IntPtr]::Zero; $panel = [IntPtr]::Zero; $hostProcess = $null
+$source = [IntPtr]::Zero; $panel = [IntPtr]::Zero
 $secondPanel = [IntPtr]::Zero
+$hostPid = 0
+$tabDone = $null
+$settingsFile = $null; $settingsBackup = $null; $settingsHash = $null; $settingsSiblings = @()
 $script:checks = 0
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
     $script:checks++
 }
-function Wait-For([scriptblock] $Condition, [string] $Message) {
+function Wait-For([scriptblock] $Condition, [string] $Message, [int] $Seconds = 15) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    while ($timer.Elapsed.TotalSeconds -lt 15) {
+    while ($timer.Elapsed.TotalSeconds -lt $Seconds) {
         if (& $Condition) { return }
         Start-Sleep -Milliseconds 100
     }
     throw "Timeout: $Message"
 }
 function Send-Request([hashtable] $Request) {
-    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::InOut)
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $script:pipeName, [IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(3000)
         $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true)
@@ -118,41 +128,98 @@ function Send-Request([hashtable] $Request) {
 }
 # PowerShell also treats the curly single quotes as string delimiters.
 function Literal([string] $Value) { "'" + [regex]::Replace($Value, "['‘’‚‛]", '$0$0') + "'" }
+# Windows Terminal's settings.json, in the same order wtpocket detects them.
+function Find-TerminalSettings {
+    $local = $env:LOCALAPPDATA
+    @(
+        (Join-Path $local 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'),
+        (Join-Path $local 'Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json'),
+        (Join-Path $local 'Microsoft\Windows Terminal\settings.json')
+    ) | Where-Object { [IO.File]::Exists($_) } | Select-Object -First 1
+}
+function Get-TabItemCount([IntPtr] $Window) {
+    try {
+        $element = [Windows.Automation.AutomationElement]::FromHandle($Window)
+        $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::TabItem)
+        return $element.FindAll([Windows.Automation.TreeScope]::Descendants, $condition).Count
+    } catch { return -1 }
+}
+# Brings a test window to the foreground; returns whether Windows allowed it.
+function Request-Foreground([IntPtr] $Window, [int] $Seconds = 5) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    while ($timer.Elapsed.TotalSeconds -lt $Seconds) {
+        [WtToolsWindowProbe]::Focus($Window)
+        Start-Sleep -Milliseconds 150
+        if ([WtToolsWindowProbe]::GetForegroundWindow() -eq $Window) { return $true }
+    }
+    return $false
+}
 try {
+    $exe = Join-Path $root 'artifacts/host/wtpocket.exe'
+    $startup = Join-Path $root 'artifacts/host/Startup.ps1'
+    foreach ($required in @($exe, $startup)) {
+        if (-not [IO.File]::Exists($required)) { throw "Missing $required. Run scripts/Build.ps1 first." }
+    }
+    if ($VerifyTitleBarRestore) { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes }
     $special = Join-Path $testRoot "中文 a'b’; calc; ‘b; [x] ``literal"
     [IO.Directory]::CreateDirectory($special) | Out-Null
-    $module = Join-Path $root 'powershell/WtTools.psm1'
-    Import-Module $module
-    Enable-WtTools -StateRoot $testRoot
-    $pipeName = & (Get-Module WtTools) { Get-WtToolsPipeName }
     $report = Join-Path $testRoot 'panel-location.json'
     $trigger = Join-Path $testRoot 'trigger'
-    $fixture = Join-Path $testRoot 'Fixture.psm1'
+    $openResult = Join-Path $testRoot 'open-result.txt'
+    $fixture = Join-Path $testRoot 'Fixture.ps1'
+    $wrapper = Join-Path $testRoot 'PanelShell.cmd'
+    $pwshPath = Join-Path $PSHOME 'pwsh.exe'
+
+    # The host starts panels as `<shell> -NoLogo -NoProfile -NoExit -EncodedCommand <bootstrap>`.
+    # The wrapper stands in for pwsh.exe: it runs the real bootstrap, but first installs a
+    # location handler that reports the panel's directory and keeps the shell busy.
     $fixtureCode = @'
-Import-Module __MODULE__ -Global
 $ExecutionContext.InvokeCommand.LocationChangedAction = {
     param($sender, $eventArgs)
     [IO.File]::WriteAllText(__REPORT__, (@{directory=$eventArgs.NewPath.ProviderPath; pid=$PID} | ConvertTo-Json -Compress))
     Start-Sleep -Seconds 8
 }
-'@.Replace('__MODULE__', (Literal $module)).Replace('__REPORT__', (Literal $report))
-    [IO.File]::WriteAllText($fixture, $fixtureCode)
-    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $root 'artifacts/host/wttools-host.exe'))
-    $start.UseShellExecute = $false
-    foreach ($argument in @($pipeName, $testRoot, $fixture, (Join-Path $PSHOME 'pwsh.exe'))) { $start.ArgumentList.Add($argument) }
-    $hostProcess = [Diagnostics.Process]::Start($start)
-    Wait-For { Test-Path -LiteralPath (Join-Path $testRoot 'host.json') } 'test host starts'
+$encoded = [regex]::Match($env:WTPOCKET_TEST_ARGS, '-EncodedCommand\s+(\S+)').Groups[1].Value
+Invoke-Expression ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded)))
+'@.Replace('__REPORT__', (Literal $report))
+    [IO.File]::WriteAllText($fixture, $fixtureCode, [Text.UTF8Encoding]::new($true))
+    [IO.File]::WriteAllText($wrapper, "@echo off`r`nset `"WTPOCKET_TEST_ARGS=%*`"`r`n`"$pwshPath`" -NoLogo -NoProfile -NoExit -Command `". '$fixture'`"`r`n")
+
+    if ($VerifyTitleBarRestore) {
+        $settingsFile = Find-TerminalSettings
+        if (-not $settingsFile) { Write-Output 'SKIPPED: -VerifyTitleBarRestore found no Windows Terminal settings.json.'; return }
+        $settingsHash = (Get-FileHash -LiteralPath $settingsFile -Algorithm SHA256).Hash
+        $settingsBackup = Join-Path $testRoot 'settings.json.backup'
+        [IO.Directory]::CreateDirectory($testRoot) | Out-Null
+        Copy-Item -LiteralPath $settingsFile -Destination $settingsBackup
+        Assert-True ((Get-FileHash -LiteralPath $settingsBackup -Algorithm SHA256).Hash -eq $settingsHash) 'Settings backup is byte-identical'
+        $settingsSiblings = @(Get-ChildItem -LiteralPath (Split-Path $settingsFile) | ForEach-Object Name)
+        # Only the key binding is added: the profile and install destination are isolated temp files.
+        $installOutput = & $exe install --state $testRoot --destination (Join-Path $testRoot 'app') `
+            --profile (Join-Path $testRoot 'profile.ps1') --terminal-settings $settingsFile 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "wtpocket install failed: $(($installOutput | Out-String).Trim())" }
+        Assert-True ((Get-Content -LiteralPath $settingsFile -Raw).Contains('User.WTPocket.ExitFocus')) 'Installer added the focus-mode exit key binding'
+    }
 
     $knownPanels = @([WtToolsWindowProbe]::Find('wttools Panel · '))
-    $sourceCode = "Import-Module $(Literal $module); Enable-WtTools -StateRoot $(Literal $testRoot); " +
+    # A fixed session id (the handler only generates one when none is set) lets the
+    # later pipe requests address the same panel the handler created.
+    $liveSession = 'live-test-' + [guid]::NewGuid().ToString('N')
+    # Exactly what the Alt+F handler in Startup.ps1 does, run from a real terminal.
+    $sourceCode = "`$global:ErrorView = 'ConciseView'; " +
+        ". $(Literal $startup) -StateRoot $(Literal $testRoot); " +
+        "`$global:WtPocketState.Pwsh = $(Literal $wrapper); `$global:WtPocketState.SessionId = $(Literal $liveSession); " +
+        "`$ast = [Management.Automation.Language.Parser]::ParseFile($(Literal $startup), [ref] `$null, [ref] `$null); " +
+        "`$call = `$ast.Find({ param(`$n) `$n -is [Management.Automation.Language.CommandAst] -and `$n.GetCommandName() -eq 'Set-PSReadLineKeyHandler' }, `$true); " +
+        "`$handler = `$call.CommandElements[`$call.CommandElements.Count - 1].ScriptBlock.GetScriptBlock(); " +
         "Set-Location -LiteralPath $(Literal $special); " +
         "while (-not (Test-Path -LiteralPath $(Literal $trigger))) { Start-Sleep -Milliseconds 100 }; " +
-        '& (Get-Module WtTools) { param($window) Send-WtToolsRequest @{ action=''toggle''; directory=(Get-Location).ProviderPath; sourceWindow=$window } } ' +
-        "([long](Get-Content -LiteralPath $(Literal $trigger)))"
+        "`$records = @(& `$handler 3>&1 2>&1); " +
+        "[IO.File]::WriteAllText($(Literal $openResult), ((`$records | Out-String) + 'handler-finished'))"
     $start = [Diagnostics.ProcessStartInfo]::new('wt.exe')
     $start.UseShellExecute = $false
     foreach ($argument in @('-w', $sourceTitle, 'new-tab', '--title', $sourceTitle, '--suppressApplicationTitle',
-        (Join-Path $PSHOME 'pwsh.exe'), '-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand',
+        $pwshPath, '-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand',
         [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($sourceCode)))) { $start.ArgumentList.Add($argument) }
     $launcher = [Diagnostics.Process]::Start($start); $launcher.Dispose()
     Wait-For { [WtToolsWindowProbe]::Find($sourceTitle).Count -gt 0 } 'source terminal opens'
@@ -165,10 +232,20 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
             [Math]::Min(1200, $work.Right - $work.Left - 80), [Math]::Min(800, $work.Bottom - $work.Top - 80), 0x0004) | Out-Null
         Start-Sleep -Milliseconds 800
     }
+    # `wtpocket open` reads the focused window itself, so the source must be foreground.
+    if (-not (Request-Foreground $source)) {
+        Write-Output 'SKIPPED: Windows denied foreground activation of the test terminal (run on an interactive desktop); no panel assertions were made.'
+        return
+    }
     $sourceBox = [WtToolsWindowProbe+Rect]::new()
     [WtToolsWindowProbe]::GetWindowRect($source, [ref] $sourceBox) | Out-Null
-    [IO.File]::WriteAllText($trigger, $source.ToInt64().ToString())
-    Wait-For { @([WtToolsWindowProbe]::Find('wttools Panel · ') | Where-Object { $_ -notin $knownPanels }).Count -gt 0 } 'panel HWND first appears'
+    [IO.File]::WriteAllText($trigger, 'go')
+    try {
+        Wait-For { @([WtToolsWindowProbe]::Find('wttools Panel · ') | Where-Object { $_ -notin $knownPanels }).Count -gt 0 } 'panel HWND first appears'
+    } catch {
+        $detail = if ([IO.File]::Exists($openResult)) { [IO.File]::ReadAllText($openResult) } else { '(handler has not returned yet or produced no result)' }
+        throw "$($_.Exception.Message). Alt+F handler output: $detail"
+    }
     $firstPanelWindow = @([WtToolsWindowProbe]::Find('wttools Panel · ') | Where-Object { $_ -notin $knownPanels })[0]
     $firstMonitor = [WtToolsWindowProbe]::MonitorFromWindow($firstPanelWindow, 2)
     Wait-For { Test-Path -LiteralPath $report } 'panel reports its initial directory'
@@ -177,6 +254,11 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
     $newPanels = @([WtToolsWindowProbe]::Find('wttools Panel · ') | Where-Object { $_ -notin $knownPanels })
     Assert-True ($newPanels.Count -eq 1) 'Exactly one panel is created'
     $panel = $newPanels[0]
+    # The host is started by `open`; its identity is published in host.json.
+    $hostInfo = Get-Content -LiteralPath (Join-Path $testRoot 'host.json') -Raw | ConvertFrom-Json
+    $hostPid = [int] $hostInfo.pid
+    $script:pipeName = $hostInfo.pipeName
+    Assert-True ($hostInfo.backend -eq 'rust' -and $hostPid -gt 0 -and $script:pipeName) 'open starts the Rust host and publishes host.json'
     $panelWindowName = [regex]::Match([WtToolsWindowProbe]::WindowTitle($panel), 'wttools Panel · [0-9a-f]{8}').Value
     Assert-True ([WtToolsWindowProbe]::IsWindowVisible($panel)) 'New panel is visible'
     Assert-True ($firstMonitor -eq [WtToolsWindowProbe]::MonitorFromWindow($source, 2)) 'First observed panel HWND is already on the source monitor'
@@ -196,6 +278,15 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
     $expectedMoved = [WtToolsWindowProbe+Rect]::new()
     [WtToolsWindowProbe]::GetWindowRect($panel, [ref] $expectedMoved) | Out-Null
 
+    # A live panel is in focus mode (no tab row). This is what makes the later
+    # TabItem check meaningful; if UI Automation cannot tell, that check is skipped.
+    $titleBarCheckable = $false
+    if ($VerifyTitleBarRestore) {
+        $focusModeTabs = Get-TabItemCount $panel
+        $titleBarCheckable = $focusModeTabs -eq 0
+        if (-not $titleBarCheckable) { Write-Output "NOTE: UI Automation reported $focusModeTabs TabItem controls in the focus-mode panel; the title-bar check will be SKIPPED." }
+    }
+
     # The fixture is still running a blocking command inside the panel. Alt+F
     # must be handled by the host, not by PSReadLine at an idle prompt.
     if ($ExerciseKeyboard) {
@@ -208,7 +299,7 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
     Wait-For { -not [WtToolsWindowProbe]::IsWindowVisible($panel) } 'host hides a busy panel'
     Assert-True ([bool](Get-Process -Id $initial.pid -ErrorAction SilentlyContinue)) 'Hidden panel shell remains alive'
     if ($ExerciseKeyboard) { Wait-For { [WtToolsWindowProbe]::GetForegroundWindow() -eq $source } 'focus returns to source terminal' }
-    Send-Request @{ action = 'toggle'; directory = $special; sourceWindow = $source.ToInt64() }
+    Send-Request @{ action = 'toggle'; directory = $special; sourceWindow = $source.ToInt64(); sessionId = $liveSession }
     Wait-For { [WtToolsWindowProbe]::IsWindowVisible($panel) } 'existing panel reopens'
     Assert-True (@([WtToolsWindowProbe]::Find('wttools Panel · ') | Where-Object { $_ -notin $knownPanels }).Count -eq 1) 'Reopening does not create another shell'
     $movedBox = [WtToolsWindowProbe+Rect]::new()
@@ -228,14 +319,14 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
     $tabStart = [Diagnostics.ProcessStartInfo]::new('wt.exe')
     $tabStart.UseShellExecute = $false
     foreach ($argument in @('-w', $panelWindowName, 'new-tab', '--title', $addedTabTitle, '--suppressApplicationTitle',
-        (Join-Path $PSHOME 'pwsh.exe'), '-NoLogo', '-NoProfile', '-EncodedCommand',
+        $pwshPath, '-NoLogo', '-NoProfile', '-EncodedCommand',
         [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($tabCode)))) { $tabStart.ArgumentList.Add($argument) }
     $tabLauncher = [Diagnostics.Process]::Start($tabStart); $tabLauncher.Dispose()
     Wait-For { [WtToolsWindowProbe]::WindowTitle($panel).Contains($addedTabTitle) } 'added tab becomes active in the panel'
     Start-Sleep -Milliseconds 2200
     Send-Request @{ action = 'toggle'; directory = $special; sourceWindow = $panel.ToInt64() }
     Assert-True (-not [WtToolsWindowProbe]::IsWindowVisible($panel)) 'A changed active-tab title does not break hiding'
-    Send-Request @{ action = 'toggle'; directory = $special; sourceWindow = $source.ToInt64() }
+    Send-Request @{ action = 'toggle'; directory = $special; sourceWindow = $source.ToInt64(); sessionId = $liveSession }
     Assert-True ([WtToolsWindowProbe]::IsWindowVisible($panel)) 'The owner reuses the same HWND after adding a tab'
     [IO.File]::WriteAllText($tabDone, 'done')
     Wait-For { -not [WtToolsWindowProbe]::WindowTitle($panel).Contains($addedTabTitle) } 'added test tab exits without a multi-tab close dialog'
@@ -244,8 +335,29 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
     Wait-For { -not [WtToolsWindowProbe]::IsWindow($source) } 'test source closes'
     Wait-For { [WtToolsWindowProbe]::IsWindowVisible($panel) } 'orphaned hidden panel is revealed'
     Assert-True ([WtToolsWindowProbe]::IsWindowVisible($panel)) 'Closing the owner never strands its hidden panel'
-    Send-Request @{ action = 'shutdown' }
-    Assert-True ($hostProcess.WaitForExit(5000)) 'Host shuts down while preserving the panel'
+
+    if ($VerifyTitleBarRestore) {
+        # The host focuses the orphan and sends ctrl+shift+alt+F24 (setFocusMode:false).
+        $sawForeground = $false; $tabs = 0
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        while ($timer.Elapsed.TotalSeconds -lt 12 -and $tabs -le 0) {
+            if ([WtToolsWindowProbe]::GetForegroundWindow() -eq $panel) { $sawForeground = $true }
+            $tabs = Get-TabItemCount $panel
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $titleBarCheckable) {
+            Write-Output 'SKIPPED: title-bar restore (UI Automation cannot distinguish focus mode in this environment).'
+        } elseif ($tabs -le 0 -and -not $sawForeground) {
+            Write-Output 'SKIPPED: title-bar restore (Windows did not let the host focus the orphaned panel, so the key chord could not be sent).'
+        } else {
+            Assert-True ($tabs -gt 0) "An orphaned panel regains its tab row (setFocusMode:false) after its source terminal closes (TabItem count $tabs, panel was foreground: $sawForeground, visible: $([WtToolsWindowProbe]::IsWindowVisible($panel)))"
+        }
+    }
+
+    & $exe stop --state $testRoot | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'wtpocket stop succeeds'
+    Wait-For { -not (Get-Process -Id $hostPid -ErrorAction SilentlyContinue) } 'host exits after stop' 5
+    Assert-True ([WtToolsWindowProbe]::IsWindow($panel)) 'Stopping the host preserves the panel'
     Write-Output "PASS: $script:checks live Windows Terminal checks."
     if (-not $ExerciseKeyboard) { Write-Output 'Keyboard/focus assertions skipped; run -ExerciseKeyboard in an idle desktop to exercise them.' }
 } finally {
@@ -255,12 +367,36 @@ $ExecutionContext.InvokeCommand.LocationChangedAction = {
             [WtToolsWindowProbe]::PostMessage($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
         }
     }
-    if ($hostProcess -and -not $hostProcess.HasExited) { $hostProcess.Kill(); $hostProcess.WaitForExit() }
-    Remove-Module WtTools -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 300
+    # Only the host this test created (its pid comes from the isolated state directory).
+    if ($hostPid -eq 0 -and [IO.File]::Exists((Join-Path $testRoot 'host.json'))) {
+        try { $hostPid = [int] (Get-Content -LiteralPath (Join-Path $testRoot 'host.json') -Raw | ConvertFrom-Json).pid } catch { }
+    }
+    if ($hostPid -gt 0) { Stop-Process -Id $hostPid -Force -ErrorAction SilentlyContinue }
+    # Always put the user's Windows Terminal settings back, byte for byte.
+    $restoreError = $null
+    if ($settingsBackup) {
+        try {
+            if ((Get-FileHash -LiteralPath $settingsFile -Algorithm SHA256).Hash -ne $settingsHash) {
+                Copy-Item -LiteralPath $settingsBackup -Destination $settingsFile -Force
+            }
+            if ((Get-FileHash -LiteralPath $settingsFile -Algorithm SHA256).Hash -ne $settingsHash) {
+                $restoreError = "settings.json hash differs from the backup after restore: $settingsFile (backup kept at $settingsBackup)"
+            } else {
+                # Remove only the .bak files the installer created during this run.
+                Get-ChildItem -LiteralPath (Split-Path $settingsFile) -Filter 'settings.json.wtpocket-*.bak' |
+                    Where-Object { $_.Name -notin $settingsSiblings } | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        } catch { $restoreError = "could not restore settings.json: $_ (backup at $settingsBackup)" }
+    }
     $resolved = [IO.Path]::GetFullPath($testRoot)
     $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
-    if ($resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-        Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+    if ($resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and -not $restoreError) {
+        # Closing terminals is asynchronous; their shells hold the directory until they exit.
+        for ($attempt = 0; $attempt -lt 25 -and [IO.Directory]::Exists($resolved); $attempt++) {
+            Start-Sleep -Milliseconds 200
+            Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
+    if ($restoreError) { Write-Error "FAIL: $restoreError" }
+    elseif ($settingsBackup) { Write-Output 'Windows Terminal settings.json restored; hash matches the backup.' }
 }

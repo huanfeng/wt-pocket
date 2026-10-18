@@ -1,10 +1,15 @@
-#![cfg_attr(not(test), windows_subsystem = "windows")]
-
+mod cli;
+mod client;
+mod install;
 mod ipc;
 mod model;
+mod paths;
+mod profile;
 #[cfg(test)]
 mod tests;
+mod update;
 mod win;
+mod wtsettings;
 
 use model::{Bounds, Request, bootstrap};
 use std::os::windows::process::CommandExt;
@@ -68,7 +73,6 @@ impl Panel {
 
 struct Host {
     state: PathBuf,
-    module: String,
     shell: String,
     panels: Mutex<HashMap<String, Panel>>,
     stopping: AtomicBool,
@@ -82,7 +86,7 @@ impl Host {
     fn toggle(&self, request: Request) -> Result<(), String> {
         let source = request.source_window as isize;
         if !win::is_terminal(source) {
-            return Err("Run Open-WtPanel in a foreground Windows Terminal window.".into());
+            return Err("Run wtpocket open in a foreground Windows Terminal window.".into());
         }
         {
             let mut panels = self.panels.lock().unwrap();
@@ -147,11 +151,7 @@ impl Host {
                 "-NoProfile",
                 "-NoExit",
                 "-EncodedCommand",
-                &bootstrap(
-                    &request.directory,
-                    &self.module,
-                    &self.state.to_string_lossy(),
-                ),
+                &bootstrap(&request.directory),
             ])
             .spawn()
             .map_err(|e| format!("Cannot start Windows Terminal: {e}"))?;
@@ -198,10 +198,14 @@ impl Host {
         }
     }
 
+    /// Panels whose terminal window is gone become ordinary windows. They are
+    /// revealed here; the slow focus and title-bar restoration runs off the
+    /// message thread so the low-level hooks stay responsive.
     fn recover_orphans(&self) {
         let Ok(mut panels) = self.panels.try_lock() else {
             return;
         };
+        let mut released = Vec::new();
         panels.retain(|_, p| {
             if !p.valid() {
                 return false;
@@ -209,19 +213,32 @@ impl Host {
             if !win::is_terminal(p.source) {
                 win::reveal(p.window);
                 win::unmark(p.window, &p.title);
+                released.push(p.window);
                 return false;
             }
             true
         });
+        drop(panels);
+        if !released.is_empty() {
+            thread::spawn(move || released.into_iter().for_each(win::restore_title_bar));
+        }
     }
 
+    /// Releases every panel at shutdown. Runs after the hooks are removed.
     fn reveal_all(&self) {
-        for panel in self.panels.lock().unwrap().values() {
-            if panel.valid() {
-                win::reveal(panel.window);
-                win::unmark(panel.window, &panel.title);
-            }
-        }
+        let released: Vec<isize> = self
+            .panels
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|p| p.valid())
+            .map(|p| {
+                win::reveal(p.window);
+                win::unmark(p.window, &p.title);
+                p.window
+            })
+            .collect();
+        released.into_iter().for_each(win::restore_title_bar);
     }
 }
 
@@ -358,9 +375,9 @@ impl Drop for Hook {
 }
 
 fn run(arguments: &[String]) -> io::Result<()> {
-    if arguments.len() != 4 {
+    if arguments.len() != 3 {
         return Err(io::Error::other(
-            "Expected pipeName, stateRoot, modulePath and pwshPath.",
+            "Expected pipeName, stateRoot and pwshPath.",
         ));
     }
     let pipe_name = &arguments[0];
@@ -382,8 +399,7 @@ fn run(arguments: &[String]) -> io::Result<()> {
     }
     let host = Arc::new(Host {
         state: PathBuf::from(&arguments[1]),
-        module: arguments[2].clone(),
-        shell: arguments[3].clone(),
+        shell: arguments[2].clone(),
         panels: Mutex::new(HashMap::new()),
         stopping: AtomicBool::new(false),
     });
@@ -394,8 +410,8 @@ fn run(arguments: &[String]) -> io::Result<()> {
         PeekMessageW(&mut MSG::default(), ptr::null_mut(), 0, 0, PM_NOREMOVE);
     }
     HOOKS.with(|state| state.borrow_mut().host = Some(host.clone()));
-    let _keyboard = Hook(win::install_hook(WH_KEYBOARD_LL, Some(keyboard))?);
-    let _mouse = Hook(win::install_hook(WH_MOUSE_LL, Some(mouse))?);
+    let keyboard_hook = Hook(win::install_hook(WH_KEYBOARD_LL, Some(keyboard))?);
+    let mouse_hook = Hook(win::install_hook(WH_MOUSE_LL, Some(mouse))?);
     let info_path = host.state.join("host.json");
     fs::write(
         &info_path,
@@ -440,6 +456,8 @@ fn run(arguments: &[String]) -> io::Result<()> {
     let server_result = server
         .join()
         .map_err(|_| io::Error::other("IPC thread panicked."));
+    // Without a message pump the hooks would stall input while panels are released.
+    drop((keyboard_hook, mouse_hook));
     host.reveal_all();
     HOOKS.with(|state| *state.borrow_mut() = HookState::default());
     let _ = fs::remove_file(info_path);
@@ -455,18 +473,36 @@ fn run(arguments: &[String]) -> io::Result<()> {
 
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
-    if arguments.as_slice() == ["--version"] {
-        println!("wttools-host {} (Rust)", version());
+    let Some(command) = arguments.first().map(String::as_str) else {
+        print!("{}", cli::USAGE);
         return ExitCode::SUCCESS;
-    }
-    match run(&arguments) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            if let Some(state) = arguments.get(1) {
-                let _ = fs::create_dir_all(state);
-                append_log(Path::new(state), &error.to_string());
-            }
-            ExitCode::FAILURE
+    };
+    match command {
+        "version" | "--version" | "-V" => {
+            println!("wtpocket {}", version());
+            ExitCode::SUCCESS
         }
+        "help" | "--help" | "-h" => {
+            print!("{}", cli::USAGE);
+            ExitCode::SUCCESS
+        }
+        // Internal: the background host, started by `open` with pipe, state and pwsh.
+        "serve" => match run(&arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                if let Some(state) = arguments.get(2) {
+                    let _ = fs::create_dir_all(state);
+                    append_log(Path::new(state), &error.to_string());
+                }
+                ExitCode::FAILURE
+            }
+        },
+        _ => match cli::run(command, &arguments[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("wtpocket: {error}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }

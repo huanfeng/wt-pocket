@@ -33,7 +33,8 @@ impl Drop for Security {
     }
 }
 
-fn current_user_security() -> io::Result<Security> {
+/// The current user's SID in string form (`S-1-5-...`).
+pub fn current_user_sid() -> io::Result<String> {
     unsafe {
         let mut token = ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -59,26 +60,32 @@ fn current_user_security() -> io::Result<Security> {
         if ConvertSidToStringSidW(user.User.Sid, &mut sid_text) == 0 {
             return Err(io::Error::last_os_error());
         }
-        let sid_allocation = Security(sid_text.cast());
+        let _sid_allocation = Security(sid_text.cast());
         let mut count = 0;
         while *sid_text.add(count) != 0 {
             count += 1;
         }
-        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(sid_text, count));
-        let sddl = wide(&format!("D:P(A;;GA;;;{sid})"));
-        let mut descriptor = ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        Ok(String::from_utf16_lossy(std::slice::from_raw_parts(
+            sid_text, count,
+        )))
+    }
+}
+
+fn current_user_security() -> io::Result<Security> {
+    let sddl = wide(&format!("D:P(A;;GA;;;{})", current_user_sid()?));
+    let mut descriptor = ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
             1,
             &mut descriptor,
             ptr::null_mut(),
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        drop(sid_allocation);
-        Ok(Security(descriptor))
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
     }
+    Ok(Security(descriptor))
 }
 
 fn read_request(pipe: HANDLE, host: &Host) -> Result<Vec<u8>, String> {

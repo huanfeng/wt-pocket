@@ -1,6 +1,6 @@
 [package]
-name = "wttools-host"
-version = "0.2.1"
+name = "wtpocket"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -8,11 +8,12 @@ description = "Native Windows Terminal panel controller for WTPocket"
 repository = "https://github.com/huanfeng/wt-pocket"
 
 [[bin]]
-name = "wttools-host"
+name = "wtpocket"
 path = "src/host/main.rs"
 
 [dependencies]
 base64 = "0.22"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 windows-sys = { version = "0.61", features = [
@@ -20,7 +21,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Com", "Win32_System_Threading", "Win32_System_Pipes",
     "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_System_Memory",
     "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console",
 ] }
 
 [profile.release]

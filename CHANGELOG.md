@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.0
+
+- Merge all management into one native `wtpocket` command: `open`, `stop`, `update`, `install`, `uninstall`, `version`. `wtpocket update` fetches, verifies and installs the latest release and hands the background host over.
+- **Breaking:** `Open-WtPanel`, `Enable-WtTools` and `Stop-WtTools` are removed. Use `wtpocket open` / `wtpocket stop`. Re-run the install command to migrate; old versions stay on disk for running shells.
+- Remove the PowerShell module, the .NET helper DLL and the PowerShell installer scripts. The package is now `wtpocket.exe` plus one small `Startup.ps1`, and building no longer needs the .NET SDK.
+- When a panel's terminal window closes (or the host stops), the panel becomes a normal window again with its title bar and tab row restored. The installer adds a marked `ctrl+shift+alt+f24` -> `setFocusMode: false` binding to Windows Terminal's `settings.json` (backed up, removed by `uninstall`, skipped with `--no-terminal-settings`).
+- `wtpocket stop` releases hidden panels left behind by a killed or crashed host.
+- Escape all curly single quotes in the paths written to the PowerShell profile block.
+- Rotate `host.log` at 1 MiB; reuse an already repaired payload directory instead of creating a new one on every reinstall.
+- Fix `wtpocket open` hanging callers that capture its output: the background host no longer inherits the caller's pipes.
+
 ## v0.2.1
 
 - Fix a command-injection path in the panel startup script: a directory name containing curly single quotes (U+2018/2019/201A/201B) could break out of the quoted literal. Paths are now passed as Base64, so no quoting rules apply.

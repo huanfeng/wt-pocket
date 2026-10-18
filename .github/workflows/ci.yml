@@ -23,10 +23,6 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: |
-            8.0.x
       - name: Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-docs
@@ -44,21 +40,21 @@ jobs:
       - name: Headless tests
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($test in @('Smoke', 'Module', 'Startup', 'Backend.Migration')) {
+          foreach ($test in @('Smoke', 'Cli', 'Startup', 'Backend.Migration')) {
             & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
           }
       - name: Package native release
         env:
           PACKAGE_RUNTIME: ${{ matrix.runtime }}
-        run: ./scripts/Package.ps1 -Version 0.2.1 -Runtime $env:PACKAGE_RUNTIME
+        run: ./scripts/Package.ps1 -Version 0.3.0 -Runtime $env:PACKAGE_RUNTIME
       - name: Offline release installer tests
         env:
           PACKAGE_RUNTIME: ${{ matrix.runtime }}
-        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/v0.2.1/wtpocket-v0.2.1-$env:PACKAGE_RUNTIME.zip" -ChecksumPath ./artifacts/release/v0.2.1/SHA256SUMS
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/v0.3.0/wtpocket-v0.3.0-$env:PACKAGE_RUNTIME.zip" -ChecksumPath ./artifacts/release/v0.3.0/SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
           name: wtpocket-ci-${{ matrix.runtime }}
-          path: artifacts/release/v0.2.1/*
+          path: artifacts/release/v0.3.0/*
           if-no-files-found: error
           retention-days: 7

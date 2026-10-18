@@ -5,7 +5,7 @@ param(
     [string] $Runtime = ('win-' + [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()),
     [string] $OutputDirectory,
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
-    [string] $Version = '0.2.1'
+    [string] $Version = '0.3.0'
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -17,15 +17,17 @@ $previousVersion = $env:WTPOCKET_VERSION
 try {
     $env:WTPOCKET_VERSION = $Version
     & cargo build --manifest-path (Join-Path $root 'Cargo.toml') --locked --release --target $target
-    if ($LASTEXITCODE -ne 0) { throw 'Rust host build failed. Install Rust MSVC and the matching Visual Studio C++ build tools.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Rust build failed. Install Rust MSVC and the matching Visual Studio C++ build tools.' }
 } finally { $env:WTPOCKET_VERSION = $previousVersion }
-# This tiny managed P/Invoke bridge uses PowerShell's runtime. No .NET runtime is bundled.
-$helperOutput = Join-Path $root 'artifacts/shell-helper'
-& dotnet build (Join-Path $root 'src/WtTools.ShellNative/WtTools.ShellNative.csproj') -c Release `
-    --output $helperOutput --nologo
-if ($LASTEXITCODE -ne 0) { throw 'PowerShell native API helper build failed.' }
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
-# Allowlist prevents old .NET host/runtime files from leaking into new packages.
-Copy-Item -LiteralPath (Join-Path $root "target/$target/release/wttools-host.exe") -Destination (Join-Path $OutputDirectory 'wttools-host.exe') -Force
-Copy-Item -LiteralPath (Join-Path $helperOutput 'WtTools.ShellNative.dll') -Destination (Join-Path $OutputDirectory 'WtTools.ShellNative.dll') -Force
-Write-Output "Rust host and PowerShell helper built in $($timer.Elapsed.TotalSeconds.ToString('F2')) seconds."
+if (-not $PSBoundParameters.ContainsKey('OutputDirectory')) {
+    # Drop leftovers from older layouts (e.g. the .NET host) from our own default
+    # directory only; a caller-chosen directory is never cleaned.
+    $payload = @('wtpocket.exe', 'Startup.ps1', 'LICENSE')
+    Get-ChildItem -LiteralPath $OutputDirectory -File | Where-Object { $_.Name -notin $payload } | Remove-Item -Force
+}
+# Allowlist: the installable payload is exactly the executable and its PowerShell shim.
+Copy-Item -LiteralPath (Join-Path $root "target/$target/release/wtpocket.exe") -Destination (Join-Path $OutputDirectory 'wtpocket.exe') -Force
+Copy-Item -LiteralPath (Join-Path $root 'powershell/Startup.ps1') -Destination (Join-Path $OutputDirectory 'Startup.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $OutputDirectory 'LICENSE') -Force
+Write-Output ('wtpocket built in {0:N2} seconds.' -f $timer.Elapsed.TotalSeconds)

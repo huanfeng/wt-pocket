@@ -108,26 +108,23 @@ try {
         $archive.Dispose()
     }
     Expand-Archive -LiteralPath $ArchivePath -DestinationPath $extractionRoot
-    foreach ($requiredFile in @(
-        'LICENSE', 'README.md',
-        'scripts/Install-WtTools.ps1', 'scripts/Start-WtToolsHost.ps1', 'scripts/Uninstall-WtTools.ps1',
-        'powershell/Startup.ps1', 'powershell/WtTools.psm1',
-        'artifacts/host/wttools-host.exe', 'artifacts/host/WtTools.ShellNative.dll'
-    )) {
+    foreach ($requiredFile in @('wtpocket.exe', 'Startup.ps1', 'LICENSE')) {
         if (-not [IO.File]::Exists((Join-Path $extractionRoot $requiredFile))) {
             throw "The WTPocket package is incomplete: missing '$requiredFile'."
         }
     }
-    $installParameters = @{}
-    foreach ($parameterName in @('Destination', 'ProfilePath', 'StateRoot')) {
-        if ($PSBoundParameters.ContainsKey($parameterName)) {
-            if ([string]::IsNullOrWhiteSpace($PSBoundParameters[$parameterName])) {
-                throw "-$parameterName must not be empty."
+    # Installation itself is `wtpocket.exe install`; this script only fetches and verifies the package.
+    $installArguments = @()
+    foreach ($mapping in @(@('Destination', '--destination'), @('ProfilePath', '--profile'), @('StateRoot', '--state'))) {
+        if ($PSBoundParameters.ContainsKey($mapping[0])) {
+            if ([string]::IsNullOrWhiteSpace($PSBoundParameters[$mapping[0]])) {
+                throw "-$($mapping[0]) must not be empty."
             }
-            $installParameters[$parameterName] = $PSBoundParameters[$parameterName]
+            $installArguments += $mapping[1], $PSBoundParameters[$mapping[0]]
         }
     }
-    & (Join-Path $extractionRoot 'scripts/Install-WtTools.ps1') @installParameters
+    & (Join-Path $extractionRoot 'wtpocket.exe') install @installArguments
+    if ($LASTEXITCODE -ne 0) { throw "WTPocket installation failed (exit code $LASTEXITCODE)." }
 } finally {
     # Only remove the fresh directory allocated by this invocation, never the
     # caller's offline archive or any installed application files.

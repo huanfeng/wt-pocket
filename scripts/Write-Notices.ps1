@@ -8,7 +8,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot read locked dependency metadata.' }
 $metadata = $metadataJson | ConvertFrom-Json
 $notice = [Text.StringBuilder]::new("WTPocket third-party notices`n`n")
 # Include license texts for the locked dependency graph, including build tools.
-foreach ($package in ($metadata.packages | Where-Object name -ne 'wttools-host' | Sort-Object name)) {
+foreach ($package in ($metadata.packages | Where-Object name -ne 'wtpocket' | Sort-Object name)) {
     [void] $notice.AppendLine("=== $($package.name) $($package.version) ($($package.license)) ===")
     $directory = Split-Path $package.manifest_path -Parent
     $licenses = @(Get-ChildItem -LiteralPath $directory -File | Where-Object Name -match '^(LICENSE|COPYING|UNLICENSE)')

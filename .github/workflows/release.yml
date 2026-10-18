@@ -45,10 +45,6 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: |
-            8.0.x
       - name: Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-docs
@@ -63,7 +59,7 @@ jobs:
           cargo test --locked
           if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
           ./scripts/Build.ps1
-          foreach ($test in @('Smoke', 'Module', 'Startup', 'Backend.Migration')) {
+          foreach ($test in @('Smoke', 'Cli', 'Startup', 'Backend.Migration')) {
             & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
           }

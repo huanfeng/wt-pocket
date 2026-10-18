@@ -1,7 +1,8 @@
 #Requires -Version 7.4
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $root 'powershell/WtTools.psm1'
+$exe = Join-Path $root 'artifacts/host/wtpocket.exe'
+$pwshPath = Join-Path $PSHOME 'pwsh.exe'
 $script:checks = 0
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "FAIL: $Message" }
@@ -10,8 +11,16 @@ function Assert-True([bool] $Condition, [string] $Message) {
 # The host starts without WT, rejects an invalid request, survives it, then shuts
 # down cleanly. This test never creates or closes user terminal windows.
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wttools-tests-' + [guid]::NewGuid().ToString('N'))
-$pipeName = 'wttools-tests-' + [guid]::NewGuid().ToString('N')
 $hostProcess = $null
+$duplicate = $null
+# `wtpocket stop --state` finds the host by the pipe name derived from the state
+# directory (sha256 of SID|UPPERCASED path), so the test host must use that name.
+function Get-StatePipeName([string] $State) {
+    $key = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value + '|' + [IO.Path]::GetFullPath($State).ToUpperInvariant()
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key)))
+    'wttools-' + $hash.Substring(0, 24)
+}
+$pipeName = Get-StatePipeName $testRoot
 function Send-TestRequest([hashtable] $Request) {
     Send-TestJson ($Request | ConvertTo-Json -Compress)
 }
@@ -28,30 +37,37 @@ function Send-TestJson([string] $Json) {
         return $pending.Result | ConvertFrom-Json
     } finally { $pipe.Dispose() }
 }
-try {
-    New-Item -ItemType Directory -Path $testRoot | Out-Null
-    $compiledHost = Join-Path $root 'artifacts/host/wttools-host.exe'
+function Start-TestHost {
+    $info = [Diagnostics.ProcessStartInfo]::new($exe)
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    foreach ($argument in @('serve', $pipeName, $testRoot, $pwshPath)) { $info.ArgumentList.Add($argument) }
+    $info
+}
+function Invoke-Cli([string[]] $Arguments) {
+    $output = & $exe @Arguments 2>&1 | Out-String
+    [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output.Trim() }
+}
+function Wait-HostInfo([Diagnostics.Process] $Process, [string] $Path) {
     $timer = [Diagnostics.Stopwatch]::StartNew()
-    if (Test-Path -LiteralPath $compiledHost) {
-        $start = [Diagnostics.ProcessStartInfo]::new($compiledHost)
-        $start.UseShellExecute = $false
-        foreach ($argument in @($pipeName, $testRoot, $modulePath, (Join-Path $PSHOME 'pwsh.exe'))) { $start.ArgumentList.Add($argument) }
-        $hostProcess = [Diagnostics.Process]::Start($start)
-    } else {
-        $hostScript = (Join-Path $root 'scripts/Start-WtToolsHost.ps1').Replace("'", "''")
-        $code = "& '$hostScript' -PipeName '$pipeName' -StateRoot '$($testRoot.Replace("'", "''"))'"
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
-        $hostProcess = Start-Process (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoLogo', '-NoProfile', '-EncodedCommand', $encoded) `
-            -WindowStyle Hidden -RedirectStandardError (Join-Path $testRoot 'stderr.txt') -PassThru
+    while (-not (Test-Path -LiteralPath $Path) -and $timer.Elapsed.TotalSeconds -lt 15) {
+        if ($Process.HasExited) { throw "Host exited early with code $($Process.ExitCode)." }
+        Start-Sleep -Milliseconds 20
     }
+}
+try {
+    Assert-True (Test-Path -LiteralPath $exe) 'artifacts/host/wtpocket.exe exists (run scripts/Build.ps1)'
+    New-Item -ItemType Directory -Path $testRoot | Out-Null
     $hostInfo = Join-Path $testRoot 'host.json'
-    while (-not (Test-Path -LiteralPath $hostInfo) -and $timer.Elapsed.TotalSeconds -lt 15) {
-        if ($hostProcess.HasExited) { throw (Get-Content (Join-Path $testRoot 'stderr.txt') -Raw) }
-        Start-Sleep -Milliseconds 100
-    }
+    $start = Start-TestHost
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $hostProcess = [Diagnostics.Process]::Start($start)
+    Wait-HostInfo $hostProcess $hostInfo
     Assert-True (Test-Path -LiteralPath $hostInfo) 'Host starts without dependencies or a build step'
-    Assert-True ((Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).backend -eq 'rust') 'The tested host is the Rust backend'
     $startupMs = $timer.ElapsedMilliseconds
+    $info = Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json
+    Assert-True ($info.backend -eq 'rust') 'The tested host is the Rust backend'
+    Assert-True ($info.pipeName -eq $pipeName) 'host.json records the pipe name derived from the state directory'
     $response = Send-TestRequest @{ action = 'toggle'; directory = $testRoot; sourceWindow = 0 }
     Assert-True (-not $response.ok -and $response.error -match 'Windows Terminal') 'Host rejects invalid source HWND'
     $response = Send-TestRequest @{ action = 'unknown' }
@@ -79,7 +95,7 @@ try {
     try {
         Assert-True ($duplicate.WaitForExit(3000) -and $duplicate.ExitCode -eq 0) 'A second host for the same pipe exits without replacing the running host'
         Assert-True ((Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).pid -eq $hostProcess.Id) 'Duplicate startup preserves existing host metadata'
-    } finally { if (-not $duplicate.HasExited) { $duplicate.Kill() }; $duplicate.Dispose() }
+    } finally { if (-not $duplicate.HasExited) { $duplicate.Kill() }; $duplicate.Dispose(); $duplicate = $null }
     $actualHostId = (Get-Content -LiteralPath $hostInfo -Raw | ConvertFrom-Json).pid
     $actualHost = Get-Process -Id $actualHostId
     $workingSet = [math]::Round($actualHost.WorkingSet64 / 1MB, 1)
@@ -87,9 +103,27 @@ try {
     Assert-True $response.ok 'Host acknowledges shutdown'
     Assert-True ($hostProcess.WaitForExit(5000)) 'Host exits after shutdown'
     Assert-True (-not (Test-Path -LiteralPath $hostInfo)) 'Host removes its running metadata'
+
+    # CLI surface.
+    $result = Invoke-Cli @('version')
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match '^wtpocket \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') 'version prints "wtpocket <semver>"'
+    $result = Invoke-Cli @('bogus')
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Unknown command') 'An unknown command exits non-zero'
+
+    $hostProcess = [Diagnostics.Process]::Start((Start-TestHost))
+    Wait-HostInfo $hostProcess $hostInfo
+    Assert-True (Test-Path -LiteralPath $hostInfo) 'A host can be restarted on the same state directory'
+    $result = Invoke-Cli @('stop', '--state', $testRoot)
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match 'Stopped') 'stop reports that it stopped the running host'
+    Assert-True ($hostProcess.WaitForExit(5000)) 'stop shuts the host process down'
+    Assert-True (-not (Test-Path -LiteralPath $hostInfo)) 'stop leaves no host metadata behind'
+    $result = Invoke-Cli @('stop', '--state', $testRoot)
+    Assert-True ($result.ExitCode -eq 0 -and $result.Output -match 'not running') 'A second stop reports not running and succeeds'
     Write-Output "PASS: $script:checks checks. Host startup=${startupMs}ms, working set=${workingSet}MiB."
 } finally {
-    if ($hostProcess -and -not $hostProcess.HasExited) { $hostProcess.Kill(); $hostProcess.WaitForExit() }
+    foreach ($process in @($hostProcess, $duplicate)) {
+        if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+    }
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
     $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if ($resolvedTestRoot.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {

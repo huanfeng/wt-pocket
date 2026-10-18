@@ -5,7 +5,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
     System::{Com::CoCreateGuid, LibraryLoader::GetModuleHandleW, Threading::*},
-    UI::{HiDpi::*, WindowsAndMessaging::*},
+    UI::{HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
 pub fn wide(text: &str) -> Vec<u16> {
@@ -215,12 +215,63 @@ pub fn find_panel(title: &str) -> isize {
     search.found
 }
 
+pub const TITLE_PREFIX: &str = "wttools Panel · ";
+
+/// True when another WTPocket process (a host of any release, or a running
+/// command) exists. Hidden panels are only "stranded" if none does.
+pub fn other_wtpocket_running() -> bool {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+    let snapshot = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
+    if snapshot.0 == INVALID_HANDLE_VALUE {
+        // Cannot tell, so assume yes: releasing a live host's panels is worse.
+        return true;
+    }
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let own = std::process::id();
+    let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
+    while more {
+        let length = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+        let name = String::from_utf16_lossy(&entry.szExeFile[..length]).to_lowercase();
+        if entry.th32ProcessID != own && (name == "wtpocket.exe" || name == "wttools-host.exe") {
+            return true;
+        }
+        more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+    }
+    false
+}
+
+/// Hidden panel windows with no host to control them (it crashed or was killed).
+pub fn stranded_panels() -> Vec<isize> {
+    unsafe extern "system" fn visit(window: HWND, data: LPARAM) -> i32 {
+        // EnumWindows invokes this synchronously while the Vec remains alive.
+        let found = unsafe { &mut *(data as *mut Vec<isize>) };
+        let mut text = [0u16; 256];
+        let length = unsafe { GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32) };
+        let title = String::from_utf16_lossy(&text[..length as usize]);
+        if title.starts_with(TITLE_PREFIX)
+            && !visible(window as isize)
+            && is_terminal(window as isize)
+        {
+            found.push(window as isize);
+        }
+        1
+    }
+    let mut found = Vec::new();
+    unsafe {
+        EnumWindows(Some(visit), &mut found as *mut _ as isize);
+    }
+    found
+}
+
 pub fn unique_title() -> Result<String, String> {
     let mut guid = windows_sys::core::GUID::from_u128(0);
     if unsafe { CoCreateGuid(&mut guid) } < 0 {
         return Err("Cannot generate a panel identifier.".into());
     }
-    Ok(format!("wttools Panel · {:08x}", guid.data1))
+    Ok(format!("{TITLE_PREFIX}{:08x}", guid.data1))
 }
 
 pub fn install_hook(kind: i32, callback: HOOKPROC) -> io::Result<HHOOK> {
@@ -229,5 +280,50 @@ pub fn install_hook(kind: i32, callback: HOOKPROC) -> io::Result<HHOOK> {
         Err(io::Error::last_os_error())
     } else {
         Ok(hook)
+    }
+}
+
+fn key(vk: u16, up: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                ..Default::default()
+            },
+        },
+    }
+}
+
+/// A released panel is still in WT's focus mode. WT exposes no command line
+/// for leaving it, so send the managed chord (see `wtsettings`) that the
+/// installer bound to `setFocusMode: false`. The chord is only sent while the
+/// panel really owns the keyboard, so it can never land in another program.
+pub fn restore_title_bar(window: isize) {
+    focus(window);
+    for _ in 0..20 {
+        if foreground() == window {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if foreground() != window {
+        return;
+    }
+    // Let WT's XAML input settle after activation before the chord arrives.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let chord = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_F24];
+    let inputs: Vec<INPUT> = chord
+        .iter()
+        .map(|&vk| key(vk, false))
+        .chain(chord.iter().rev().map(|&vk| key(vk, true)))
+        .collect();
+    unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        );
     }
 }
