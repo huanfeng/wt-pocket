@@ -44,7 +44,7 @@ function Invoke-Open {
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
-        foreach ($argument in @('open', $testRoot, '--state', $testRoot, '--session', 't', '--pwsh', $pwshPath)) { $start.ArgumentList.Add($argument) }
+        foreach ($argument in @('open', $testRoot, '--state', $testRoot, '--session', 't', '--pwsh', $pwshPath, '--source-window', '1')) { $start.ArgumentList.Add($argument) }
         $process = [Diagnostics.Process]::Start($start)
         $outTask = $process.StandardOutput.ReadToEndAsync()
         $errTask = $process.StandardError.ReadToEndAsync()
@@ -68,8 +68,7 @@ try {
     $oldPid = $runningHost.Id
 
     $result = Invoke-Open
-    $hostLog = "log=" + $(if (Test-Path (Join-Path $testRoot "host.log")) { Get-Content (Join-Path $testRoot "host.log") -Raw } else { "none" }) + " info=" + $(if (Test-Path $infoPath) { Get-Content $infoPath -Raw } else { "none" }) + " procs=" + ((Get-Process wtpocket -ErrorAction SilentlyContinue | ForEach-Object Id) -join ",") + " exe=" + $exe + " fg=" + (Get-Item $exe).Length
-    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') "open reports the missing Windows Terminal after the handoff (exit $($result.ExitCode): $($result.Output) log: $hostLog)"
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') "open reports the missing Windows Terminal after the handoff (exit $($result.ExitCode): $($result.Output))"
     Assert-True ($runningHost.WaitForExit(5000)) 'Legacy backend handoff uses graceful shutdown'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
     Assert-True ($newInfo.backend -eq 'rust') 'The replacement host records the rust backend'
