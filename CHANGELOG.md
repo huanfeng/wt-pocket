@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+- Fix the managed Windows Terminal `settings.json` block: it no longer writes a trailing comma before `]` when `actions` or `keybindings` is empty, which made Terminal refuse to reload its settings. Affected files can be repaired by re-running `wtpocket install`.
+
 ## v0.3.0
 
 - Merge all management into one native `wtpocket` command: `open`, `stop`, `update`, `install`, `uninstall`, `version`. `wtpocket update` fetches, verifies and installs the latest release and hands the background host over.

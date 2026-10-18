@@ -70,7 +70,7 @@ try {
         if (-not [IO.File]::Exists((Join-Path $hostDir 'wtpocket.exe'))) { & (Join-Path $root 'scripts/Build.ps1') | Out-Null }
         $entries = [ordered]@{}
         foreach ($name in 'wtpocket.exe', 'Startup.ps1', 'LICENSE') { $entries[$name] = [IO.File]::ReadAllBytes((Join-Path $hostDir $name)) }
-        $entries['release.json'] = $utf8.GetBytes('{"product":"WTPocket","version":"0.3.0","backend":"rust"}')
+        $entries['release.json'] = $utf8.GetBytes('{"product":"WTPocket","version":"0.3.1","backend":"rust"}')
         $ArchivePath = Join-Path $testRoot 'wtpocket-v0.1.0-win-x64.zip'
         New-Zip $ArchivePath $entries
     }
