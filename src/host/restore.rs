@@ -105,6 +105,9 @@ fn candidates(
     sessions
         .into_iter()
         .filter(|s| !open.iter().any(|p| same_path(p, &s.path)))
+        // `;` separates wt subcommands and its escaping rules are not reliable
+        // for every position, so such directories are not offered for restore.
+        .filter(|s| !s.path.contains(';'))
         .filter(|s| exists(&s.path))
         .filter(|s| seen.insert(s.path.trim_end_matches('\\').to_lowercase()))
         .take(MAX_ENTRIES)
@@ -457,11 +460,8 @@ fn wt_args(sessions: &[&Session]) -> Vec<String> {
         } else {
             &session.path
         };
-        // wt splits its command line at a trailing `;`; `\;` is its escape for a literal one.
-        args.push(match directory.strip_suffix(';') {
-            Some(stem) => format!(r"{stem}\;"),
-            None => directory.to_string(),
-        });
+        // Paths containing `;` never get here (see `candidates`).
+        args.push(directory.to_string());
     }
     args
 }
@@ -684,13 +684,24 @@ mod tests {
     }
 
     #[test]
-    fn wt_args_neutralize_separators_and_reject_non_guid_profiles() {
+    fn semicolon_paths_are_never_offered_and_profiles_must_be_guids() {
+        let sessions = vec![
+            session(r"C:\odd;", 4, 0),
+            session(r"C:\a;calc.exe", 3, 0),
+            session(r"C:\;new-tab", 2, 0),
+            session(r"C:\fine", 1, 0),
+        ];
+        let result = candidates(sessions, |_| false, |_| true);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, r"C:\fine");
         let hostile = Session {
             profile: r"{x}; new-tab -d C:\evil".into(),
-            ..session(r"C:\odd;", 1, 0)
+            ..session(r"C:\fine", 1, 0)
         };
-        let args = wt_args(&[&hostile]);
-        assert_eq!(args, ["-w", "0", "new-tab", "-d", r"C:\odd\;"]);
+        assert_eq!(
+            wt_args(&[&hostile]),
+            ["-w", "0", "new-tab", "-d", r"C:\fine"]
+        );
         assert!(is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a402336}"));
         assert!(!is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a40233}"));
         assert!(!is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a40233g}"));
