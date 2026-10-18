@@ -8,7 +8,9 @@ use crate::{
 };
 use std::{io, path::PathBuf};
 
-pub const USAGE: &str = "\
+pub fn usage() -> String {
+    let body = t!(
+        "\
 Usage: wtpocket <command> [options]
 
 Commands:
@@ -26,7 +28,29 @@ Options (install, uninstall, update, open, stop):
   --no-terminal-settings   Do not touch Windows Terminal's settings.json
   --terminal-settings FILE Edit this settings file instead of the detected ones (repeatable)
   --no-stop                (update) Keep the running host
-";
+",
+        "\
+用法：wtpocket <命令> [选项]
+
+命令：
+  open [目录]    显示或隐藏当前终端的 Panel（默认使用当前目录）
+  stop           停止后台程序；Panel 会被显示出来并继续运行
+  update         安装最新版本（--version vX.Y.Z 指定版本，--force 重新安装）
+  install        安装当前安装包，并为新的 PowerShell 会话启用
+  uninstall      为新的 Shell 停用 WTPocket；已安装的文件会保留
+  version        显示版本
+
+选项（install、uninstall、update、open、stop）：
+  --state 目录              状态目录（默认：Documents\\PowerShell\\wttools）
+  --destination 目录        安装目录（默认：<state>\\app）
+  --profile 文件            要修改的 PowerShell 配置（默认：Microsoft.PowerShell_profile.ps1）
+  --no-terminal-settings    不改动 Windows Terminal 的 settings.json
+  --terminal-settings 文件  改为修改指定的设置文件，不自动检测（可重复）
+  --no-stop                 （update）保留运行中的后台程序
+"
+    );
+    format!("{body}\n{}\n", crate::install::hotkey_help())
+}
 
 #[derive(Default)]
 struct Parsed {
@@ -74,7 +98,9 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--no-terminal-settings" => parsed.skip_terminal = true,
             "--force" => parsed.force = true,
             "--no-stop" => parsed.no_stop = true,
-            other if other.starts_with("--") => return Err(format!("Unknown option '{other}'.")),
+            other if other.starts_with("--") => {
+                return Err(t!("Unknown option '{other}'.", "未知选项 '{other}'。"));
+            }
             _ => parsed.positional.push(arg.clone()),
         }
     }
@@ -159,15 +185,31 @@ pub fn run(command: &str, args: &[String]) -> Result<(), String> {
         }
         "stop" => {
             if client::stop(&parsed.layout()?.state)? {
-                println!("Stopped the WTPocket host. Panels were revealed and keep running.");
+                println!(
+                    "{}",
+                    t!(
+                        "Stopped the WTPocket host. Panels were revealed and keep running.",
+                        "已停止 WTPocket 后台程序。Panel 已显示，其中的 Shell 继续运行。"
+                    )
+                );
             } else {
                 let rescued = client::rescue_stranded();
                 if rescued > 0 {
                     println!(
-                        "The WTPocket host is not running. Released {rescued} hidden panel(s) it left behind."
+                        "{}",
+                        t!(
+                            "The WTPocket host is not running. Released {rescued} hidden panel(s) it left behind.",
+                            "WTPocket 后台程序未运行。已释放它遗留的 {rescued} 个隐藏 Panel。"
+                        )
                     );
                 } else {
-                    println!("The WTPocket host is not running.");
+                    println!(
+                        "{}",
+                        t!(
+                            "The WTPocket host is not running.",
+                            "WTPocket 后台程序未运行。"
+                        )
+                    );
                 }
             }
             Ok(())
@@ -192,7 +234,11 @@ pub fn run(command: &str, args: &[String]) -> Result<(), String> {
                 &mut out,
             )
         }
-        other => Err(format!("Unknown command '{other}'.\n\n{USAGE}")),
+        other => Err(format!(
+            "{}\n\n{}",
+            t!("Unknown command '{other}'.", "未知命令 '{other}'。"),
+            usage()
+        )),
     }
 }
 

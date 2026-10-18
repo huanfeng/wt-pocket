@@ -3,6 +3,8 @@
 # Every scenario runs in a child `pwsh -NoProfile` process, so this session, the
 # real profile and the real state directory are never touched.
 $ErrorActionPreference = 'Stop'
+# Messages are asserted in English regardless of the machine's display language.
+$env:WTPOCKET_LANG = 'en'
 $root = Split-Path $PSScriptRoot -Parent
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('wtpocket-startup-' + [guid]::NewGuid().ToString('N'))
 $pwsh = Join-Path $PSHOME 'pwsh.exe'

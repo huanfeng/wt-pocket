@@ -102,9 +102,10 @@ impl InstallLock {
         }
         match unsafe { WaitForSingleObject(handle.0, 30_000) } {
             WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self(handle)),
-            _ => {
-                Err("Another WTPocket installation is still running. Please retry shortly.".into())
-            }
+            _ => Err(t!(
+                "Another WTPocket installation is still running. Please retry shortly.",
+                "另一个 WTPocket 安装仍在进行，请稍后重试。"
+            )),
         }
     }
 }
@@ -131,13 +132,18 @@ fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
 fn read_text(path: &Path) -> Result<String, String> {
     match fs::read(path) {
         Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
-            format!(
+            t!(
                 "{} is not UTF-8 text; it was left unchanged.",
+                "{} 不是 UTF-8 文本，已保持原样。",
                 path.display()
             )
         }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("Cannot read {}: {e}", path.display())),
+        Err(e) => Err(t!(
+            "Cannot read {}: {e}",
+            "无法读取 {}：{e}",
+            path.display()
+        )),
     }
 }
 
@@ -154,10 +160,12 @@ fn update_file(
     }
     if path.exists() {
         let backup = PathBuf::from(format!("{}.{tag}-{}.bak", path.display(), timestamp()));
-        fs::copy(path, &backup).map_err(|e| format!("Cannot back up {}: {e}", path.display()))?;
-        let _ = writeln!(out, "Backup: {}", backup.display());
+        fs::copy(path, &backup)
+            .map_err(|e| t!("Cannot back up {}: {e}", "无法备份 {}：{e}", path.display()))?;
+        let _ = writeln!(out, "{}", t!("Backup: {}", "备份：{}", backup.display()));
     }
-    write_atomic(path, updated).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+    write_atomic(path, updated)
+        .map_err(|e| t!("Cannot write {}: {e}", "无法写入 {}：{e}", path.display()))?;
     Ok(true)
 }
 
@@ -180,12 +188,13 @@ fn stage_payload(source: &Path, versions: &Path) -> Result<PathBuf, String> {
             source.join(name)
         };
         if path.is_file() {
-            let hash =
-                sha256_file(&path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+            let hash = sha256_file(&path)
+                .map_err(|e| t!("Cannot read {}: {e}", "无法读取 {}：{e}", path.display()))?;
             files.push(((*name).to_string(), path, hash));
         } else if REQUIRED.contains(name) {
-            return Err(format!(
-                "The WTPocket package is incomplete: missing '{name}'."
+            return Err(t!(
+                "The WTPocket package is incomplete: missing '{name}'.",
+                "WTPocket 安装包不完整：缺少 '{name}'。"
             ));
         }
     }
@@ -222,9 +231,13 @@ fn stage_payload(source: &Path, versions: &Path) -> Result<PathBuf, String> {
         fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
         for (name, path, hash) in &files {
             let target = staging.join(name);
-            fs::copy(path, &target).map_err(|e| format!("Cannot copy {name}: {e}"))?;
+            fs::copy(path, &target)
+                .map_err(|e| t!("Cannot copy {name}: {e}", "无法复制 {name}：{e}"))?;
             if &sha256_file(&target).map_err(|e| e.to_string())? != hash {
-                return Err(format!("Installation verification failed: {name}"));
+                return Err(t!(
+                    "Installation verification failed: {name}",
+                    "安装校验失败：{name}"
+                ));
             }
         }
         fs::rename(&staging, &installed).map_err(|e| e.to_string())
@@ -235,6 +248,35 @@ fn stage_payload(source: &Path, versions: &Path) -> Result<PathBuf, String> {
     result.map(|()| installed)
 }
 
+/// Key reference shared by `help` and the end of `install`.
+fn hotkey_lines() -> String {
+    t!(
+        "  Alt+F                Show or hide this tab's panel (also hides it from inside the panel)
+  Alt + left-drag      Move the panel by dragging its content area
+  Ctrl+Shift+Alt+F24   Reserved: restores the title bar of released panels; do not remap",
+        "  Alt+F                显示或隐藏当前标签页的 Panel（在 Panel 内按也会隐藏）
+  Alt + 鼠标左键拖动   拖动 Panel 内容区以移动窗口
+  Ctrl+Shift+Alt+F24   保留键：用于恢复已解除关联的 Panel 的标题栏，请勿改作他用"
+    )
+}
+
+/// Shown at the end of `install`.
+pub fn hotkeys() -> String {
+    let head = t!(
+        "Next: open a new PowerShell 7 tab in Windows Terminal, then use:",
+        "下一步：在 Windows Terminal 中新开一个 PowerShell 7 标签页，然后使用："
+    );
+    format!("{head}\n{}", hotkey_lines())
+}
+
+/// Shown by `help`.
+pub fn hotkey_help() -> String {
+    let head = t!(
+        "Hotkeys (in a PowerShell 7 tab of Windows Terminal, after install):",
+        "快捷键（安装后，在 Windows Terminal 的 PowerShell 7 标签页中）："
+    );
+    format!("{head}\n{}", hotkey_lines())
+}
 pub fn install(options: &Options, out: &mut dyn Write) -> Result<PathBuf, String> {
     let destination = paths::absolute(&options.destination).map_err(|e| e.to_string())?;
     let profile_path = paths::absolute(&options.profile).map_err(|e| e.to_string())?;
@@ -243,11 +285,21 @@ pub fn install(options: &Options, out: &mut dyn Write) -> Result<PathBuf, String
         .map_err(|e| e.to_string())?
         .parent()
         .map(Path::to_path_buf)
-        .ok_or("Cannot locate the package directory.")?;
+        .ok_or_else(|| {
+            t!(
+                "Cannot locate the package directory.",
+                "找不到安装包所在目录。"
+            )
+        })?;
     let _lock = InstallLock::acquire(&destination)?;
     let versions = destination.join("versions");
-    fs::create_dir_all(&versions)
-        .map_err(|e| format!("Cannot create {}: {e}", versions.display()))?;
+    fs::create_dir_all(&versions).map_err(|e| {
+        t!(
+            "Cannot create {}: {e}",
+            "无法创建 {}：{e}",
+            versions.display()
+        )
+    })?;
     let installed = stage_payload(&source, &versions)?;
 
     let startup = installed.join("Startup.ps1");
@@ -265,23 +317,44 @@ pub fn install(options: &Options, out: &mut dyn Write) -> Result<PathBuf, String
         match wtsettings::add(&text) {
             Ok(changed) => {
                 if update_file(&file, &text, &changed, "wtpocket", out)? {
-                    let _ = writeln!(out, "Added the focus-mode exit key to {}", file.display());
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        t!(
+                            "Added the focus-mode exit key to {}",
+                            "已在 {} 中添加退出焦点模式的按键绑定",
+                            file.display()
+                        )
+                    );
                 }
             }
             Err(e) => {
-                let _ = writeln!(out, "Skipped {}: {e}", file.display());
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!("Skipped {}: {e}", "已跳过 {}：{e}", file.display())
+                );
             }
         }
     }
-    let _ = writeln!(out, "Installed WTPocket to {}", installed.display());
     let _ = writeln!(
         out,
-        "Existing shells and panels keep using their current version; no loaded files are overwritten."
+        "{}",
+        t!(
+            "Installed WTPocket to {}",
+            "WTPocket 已安装到 {}",
+            installed.display()
+        )
     );
     let _ = writeln!(
         out,
-        "Open a new PowerShell 7 tab in Windows Terminal, then press Alt+F at the prompt."
+        "{}",
+        t!(
+            "Existing shells and panels keep using their current version; no loaded files are overwritten.",
+            "已打开的 Shell 和 Panel 继续使用当前版本，不会覆盖任何已加载的文件。"
+        )
     );
+    let _ = writeln!(out, "{}", hotkeys());
     Ok(installed)
 }
 
@@ -297,7 +370,11 @@ pub fn uninstall(options: &Options, out: &mut dyn Write) -> Result<(), String> {
     }
     let _ = writeln!(
         out,
-        "WTPocket disabled for new shells. Running panels are revealed, not terminated. Installed files and directory history are retained."
+        "{}",
+        t!(
+            "WTPocket disabled for new shells. Running panels are revealed, not terminated. Installed files and directory history are retained.",
+            "已为新的 Shell 停用 WTPocket。运行中的 Panel 会被显示出来而不是被终止；安装文件和目录历史会保留。"
+        )
     );
     Ok(())
 }

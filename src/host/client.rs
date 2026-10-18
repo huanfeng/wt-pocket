@@ -61,7 +61,12 @@ fn connect(name: &str, timeout: Duration) -> io::Result<fs::File> {
 }
 
 fn exchange(mut pipe: fs::File, request: serde_json::Value) -> Result<(), String> {
-    writeln!(pipe, "{request}").map_err(|e| format!("wtpocket host disconnected: {e}"))?;
+    writeln!(pipe, "{request}").map_err(|e| {
+        t!(
+            "wtpocket host disconnected: {e}",
+            "与 wtpocket 后台程序的连接已断开：{e}"
+        )
+    })?;
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut line = String::new();
@@ -69,10 +74,18 @@ fn exchange(mut pipe: fs::File, request: serde_json::Value) -> Result<(), String
     });
     let line = receiver
         .recv_timeout(Duration::from_secs(15))
-        .map_err(|_| "wtpocket host response timed out. Check host.log in the state directory.")?
+        .map_err(|_| {
+            t!(
+                "wtpocket host response timed out. Check host.log in the state directory.",
+                "wtpocket 后台程序响应超时。请查看状态目录中的 host.log。"
+            )
+        })?
         .map_err(|e| e.to_string())?;
     if line.trim().is_empty() {
-        return Err("wtpocket host disconnected.".into());
+        return Err(t!(
+            "wtpocket host disconnected.",
+            "与 wtpocket 后台程序的连接已断开。"
+        ));
     }
     let response: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
     if response["ok"].as_bool() == Some(true) {
@@ -80,8 +93,8 @@ fn exchange(mut pipe: fs::File, request: serde_json::Value) -> Result<(), String
     } else {
         Err(response["error"]
             .as_str()
-            .unwrap_or("Unknown host error.")
-            .into())
+            .map(str::to_string)
+            .unwrap_or_else(|| t!("Unknown host error.", "后台程序返回未知错误。")))
     }
 }
 
@@ -106,7 +119,12 @@ fn start_host(name: &str, state: &Path, pwsh: &Path) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map(drop)
-        .map_err(|e| format!("Cannot start the wtpocket host: {e}"))
+        .map_err(|e| {
+            t!(
+                "Cannot start the wtpocket host: {e}",
+                "无法启动 wtpocket 后台程序：{e}"
+            )
+        })
 }
 
 pub fn find_pwsh() -> Option<PathBuf> {
@@ -127,10 +145,16 @@ pub struct OpenArgs {
 
 pub fn open(args: &OpenArgs) -> Result<(), String> {
     if std::env::var_os("WT_SESSION").is_none() {
-        return Err("wtpocket open must run inside Windows Terminal.".into());
+        return Err(t!(
+            "wtpocket open must run inside Windows Terminal.",
+            "wtpocket open 必须在 Windows Terminal 中运行。"
+        ));
     }
     if !args.directory.is_dir() {
-        return Err("wtpocket requires an existing directory.".into());
+        return Err(t!(
+            "wtpocket requires an existing directory.",
+            "wtpocket 需要一个已存在的目录。"
+        ));
     }
     let name = pipe_name(&args.state).map_err(|e| e.to_string())?;
     // A host from the pre-Rust releases must hand over before we reuse the pipe.
@@ -142,14 +166,19 @@ pub fn open(args: &OpenArgs) -> Result<(), String> {
     let pipe = match connect(&name, Duration::from_millis(150)) {
         Ok(pipe) => pipe,
         Err(_) => {
-            let pwsh = args
-                .pwsh
-                .clone()
-                .or_else(find_pwsh)
-                .ok_or("Cannot find pwsh.exe; pass --pwsh.")?;
+            let pwsh = args.pwsh.clone().or_else(find_pwsh).ok_or_else(|| {
+                t!(
+                    "Cannot find pwsh.exe; pass --pwsh.",
+                    "找不到 pwsh.exe，请用 --pwsh 指定。"
+                )
+            })?;
             start_host(&name, &args.state, &pwsh)?;
-            connect(&name, Duration::from_secs(12))
-                .map_err(|e| format!("The wtpocket host did not start: {e}"))?
+            connect(&name, Duration::from_secs(12)).map_err(|e| {
+                t!(
+                    "The wtpocket host did not start: {e}",
+                    "wtpocket 后台程序没有启动：{e}"
+                )
+            })?
         }
     };
     if let Some(info) = host_info(&args.state) {

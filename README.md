@@ -59,6 +59,8 @@ pwsh -NoProfile -File ./install.ps1 -Version v0.3.1
 | `wtpocket install` | 安装当前这份程序包（离线安装用） |
 | `wtpocket version` | 显示版本 |
 
+命令行输出会按 Windows 显示语言自动选择中文或英文（可用环境变量 `WTPOCKET_LANG=zh` 或 `en` 强制指定）。`wtpocket help` 和安装结束时都会列出快捷键。
+
 `install`、`uninstall`、`update` 支持 `--no-terminal-settings`（不改动 Windows Terminal 设置）以及 `--state`、`--destination`、`--profile` 指定非默认位置。
 
 ## 使用

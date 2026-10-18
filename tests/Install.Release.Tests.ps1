@@ -6,6 +6,8 @@
 [CmdletBinding()]
 param([string] $ArchivePath, [string] $ChecksumPath)
 $ErrorActionPreference = 'Stop'
+# Messages are asserted in English regardless of the machine's display language.
+$env:WTPOCKET_LANG = 'en'
 $root = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wtpocket-release-' + [guid]::NewGuid().ToString('N'))
 $originalLocalAppData = $env:LOCALAPPDATA

@@ -1,3 +1,5 @@
+#[macro_use]
+mod i18n;
 mod cli;
 mod client;
 mod install;
@@ -86,7 +88,10 @@ impl Host {
     fn toggle(&self, request: Request) -> Result<(), String> {
         let source = request.source_window as isize;
         if !win::is_terminal(source) {
-            return Err("Run wtpocket open in a foreground Windows Terminal window.".into());
+            return Err(t!(
+                "Run wtpocket open in a foreground Windows Terminal window.",
+                "请在前台的 Windows Terminal 窗口中运行 wtpocket open。"
+            ));
         }
         {
             let mut panels = self.panels.lock().unwrap();
@@ -101,10 +106,10 @@ impl Host {
         let path = Path::new(&request.directory);
         // Reject drive-relative paths as well as missing filesystem directories.
         if !path.is_absolute() || !path.is_dir() {
-            return Err(
-                "The current directory no longer exists or is not an absolute filesystem path."
-                    .into(),
-            );
+            return Err(t!(
+                "The current directory no longer exists or is not an absolute filesystem path.",
+                "当前目录已不存在，或不是绝对的文件系统路径。"
+            ));
         }
         let session = if request.session_id.trim().is_empty() {
             source.to_string()
@@ -162,10 +167,13 @@ impl Host {
                 break;
             }
             if self.stopping.load(Ordering::Relaxed) {
-                return Err("Host is stopping.".into());
+                return Err(t!("Host is stopping.", "后台程序正在停止。"));
             }
             if Instant::now() >= deadline {
-                return Err("Windows Terminal did not create the panel within 8 seconds. Check wt.exe and your Terminal profile.".into());
+                return Err(t!(
+                    "Windows Terminal did not create the panel within 8 seconds. Check wt.exe and your Terminal profile.",
+                    "Windows Terminal 在 8 秒内没有创建 Panel。请检查 wt.exe 和终端配置。"
+                ));
             }
             thread::sleep(Duration::from_millis(80));
         }
@@ -474,7 +482,7 @@ fn run(arguments: &[String]) -> io::Result<()> {
 fn main() -> ExitCode {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let Some(command) = arguments.first().map(String::as_str) else {
-        print!("{}", cli::USAGE);
+        print!("{}", cli::usage());
         return ExitCode::SUCCESS;
     };
     match command {
@@ -483,7 +491,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "help" | "--help" | "-h" => {
-            print!("{}", cli::USAGE);
+            print!("{}", cli::usage());
             ExitCode::SUCCESS
         }
         // Internal: the background host, started by `open` with pipe, state and pwsh.

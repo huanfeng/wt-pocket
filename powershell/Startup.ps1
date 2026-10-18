@@ -11,7 +11,7 @@ if (-not $IsWindows -or -not $env:WT_SESSION) { return }
 if ($ExecutionContext.SessionState.PSVariable.GetValue('global:WtPocketState')) { return }
 $wtpocketExe = [IO.Path]::Combine($PSScriptRoot, 'wtpocket.exe')
 if (-not [IO.File]::Exists($wtpocketExe)) {
-    Write-Warning 'wtpocket.exe is missing. Run the install command again to repair the installation.'
+    Write-Warning $(if (($env:WTPOCKET_LANG, (Get-UICulture).Name -ne $null)[0] -like 'zh*') { 'wtpocket.exe 缺失。请重新运行安装命令修复。' } else { 'wtpocket.exe is missing. Run the install command again to repair the installation.' })
     return
 }
 $wtpocketContext = @{
@@ -81,7 +81,7 @@ Set-PSReadLineKeyHandler -Chord 'Alt+f' -BriefDescription WtPocketPanel -LongDes
     try {
         $state = $global:WtPocketState
         if ((Get-Location).Provider.Name -ne 'FileSystem') {
-            Write-Warning 'WTPocket requires a filesystem directory (registry and other providers are unsupported).'
+            Write-Warning $(if (($env:WTPOCKET_LANG, (Get-UICulture).Name -ne $null)[0] -like 'zh*') { 'WTPocket 需要文件系统目录（不支持注册表等其他提供程序）。' } else { 'WTPocket requires a filesystem directory (registry and other providers are unsupported).' })
             return
         }
         if (-not $state.SessionId) {

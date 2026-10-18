@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Command-line output is now Chinese or English according to the Windows display language (override with `WTPOCKET_LANG=zh|en`), and `help` and `install` print a short hotkey reference.
+
 ## v0.3.1
 
 - Fix the managed Windows Terminal `settings.json` block: it no longer writes a trailing comma before `]` when `actions` or `keybindings` is empty, which made Terminal refuse to reload its settings. Affected files can be repaired by re-running `wtpocket install`.

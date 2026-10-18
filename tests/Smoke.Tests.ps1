@@ -1,5 +1,7 @@
 #Requires -Version 7.4
 $ErrorActionPreference = 'Stop'
+# Messages are asserted in English regardless of the machine's display language.
+$env:WTPOCKET_LANG = 'en'
 $root = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $root 'artifacts/host/wtpocket.exe'
 $pwshPath = Join-Path $PSHOME 'pwsh.exe'

@@ -10,6 +10,8 @@
 [CmdletBinding()]
 param([switch] $ExerciseKeyboard, [int] $MonitorIndex = -1, [switch] $VerifyTitleBarRestore)
 $ErrorActionPreference = 'Stop'
+# Messages are asserted in English regardless of the machine's display language.
+$env:WTPOCKET_LANG = 'en'
 $root = Split-Path $PSScriptRoot -Parent
 Add-Type -TypeDefinition @'
 using System;

@@ -25,12 +25,13 @@ fn curl(args: &[&str]) -> Result<std::process::Output, String> {
         .args(["--header", "User-Agent: WTPocket-Updater"])
         .args(args)
         .output()
-        .map_err(|e| format!("Cannot run curl.exe: {e}"))?;
+        .map_err(|e| t!("Cannot run curl.exe: {e}", "无法运行 curl.exe：{e}"))?;
     if output.status.success() {
         Ok(output)
     } else {
-        Err(format!(
+        Err(t!(
             "Download failed: {}",
+            "下载失败：{}",
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
@@ -42,21 +43,31 @@ pub fn architecture() -> Result<&'static str, String> {
     } else if cfg!(target_arch = "aarch64") {
         Ok("arm64")
     } else {
-        Err("Unsupported Windows architecture. WTPocket releases support x64 and ARM64.".into())
+        Err(t!(
+            "Unsupported Windows architecture. WTPocket releases support x64 and ARM64.",
+            "不支持的 Windows 架构。WTPocket 发行版支持 x64 和 ARM64。"
+        ))
     }
 }
 
 fn latest_tag() -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
-    let output = curl(&["--header", "Accept: application/vnd.github+json", &url])
-        .map_err(|e| format!("Could not resolve the latest WTPocket release: {e}"))?;
+    let output = curl(&["--header", "Accept: application/vnd.github+json", &url]).map_err(|e| {
+        t!(
+            "Could not resolve the latest WTPocket release: {e}",
+            "无法获取 WTPocket 最新版本：{e}"
+        )
+    })?;
     let release: serde_json::Value =
         serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
     let tag = release["tag_name"].as_str().unwrap_or_default().to_string();
     if is_tag(&tag) {
         Ok(tag)
     } else {
-        Err(format!("Unexpected WTPocket release tag '{tag}'."))
+        Err(t!(
+            "Unexpected WTPocket release tag '{tag}'.",
+            "意外的 WTPocket 版本标签 '{tag}'。"
+        ))
     }
 }
 
@@ -93,8 +104,9 @@ pub fn expected_hash(sums: &str, name: &str) -> Result<String, String> {
         .collect();
     match hashes.as_slice() {
         [hash] => Ok(hash.to_ascii_lowercase()),
-        _ => Err(format!(
-            "SHA256SUMS must contain exactly one checksum for '{name}'."
+        _ => Err(t!(
+            "SHA256SUMS must contain exactly one checksum for '{name}'.",
+            "SHA256SUMS 中必须恰好包含一条 '{name}' 的校验和。"
         )),
     }
 }
@@ -124,14 +136,19 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
         None => latest_tag()?,
     };
     if !is_tag(&tag) {
-        return Err(format!(
-            "Invalid WTPocket version '{tag}'. Use a version such as v0.2.1."
+        return Err(t!(
+            "Invalid WTPocket version '{tag}'. Use a version such as v0.2.1.",
+            "无效的 WTPocket 版本 '{tag}'。请使用类似 v0.2.1 的版本号。"
         ));
     }
     if tag.trim_start_matches('v') == current && !update.force {
         let _ = writeln!(
             out,
-            "WTPocket {tag} is already installed. Use --force to reinstall."
+            "{}",
+            t!(
+                "WTPocket {tag} is already installed. Use --force to reinstall.",
+                "WTPocket {tag} 已安装。如需重新安装请加 --force。"
+            )
         );
         return Ok(());
     }
@@ -146,8 +163,12 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
     let result = (|| {
         let _ = writeln!(
             out,
-            "Downloading WTPocket {tag} for Windows {}...",
-            architecture()?
+            "{}",
+            t!(
+                "Downloading WTPocket {tag} for Windows {}...",
+                "正在下载适用于 Windows {} 的 WTPocket {tag}……",
+                architecture()?
+            )
         );
         let archive = work.join(&archive_name);
         let sums = work.join("SHA256SUMS");
@@ -167,8 +188,9 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
         )?;
         let actual = sha256_file(&archive).map_err(|e| e.to_string())?;
         if actual != expected {
-            return Err(format!(
-                "SHA256 checksum verification failed for '{archive_name}'. No installation files were changed."
+            return Err(t!(
+                "SHA256 checksum verification failed for '{archive_name}'. No installation files were changed.",
+                "'{archive_name}' 的 SHA256 校验失败，未改动任何安装文件。"
             ));
         }
         let tar = system_tool("tar.exe");
@@ -176,10 +198,13 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
             .arg("-tf")
             .arg(&archive)
             .output()
-            .map_err(|e| format!("Cannot run tar.exe: {e}"))?;
+            .map_err(|e| t!("Cannot run tar.exe: {e}", "无法运行 tar.exe：{e}"))?;
         let names = String::from_utf8_lossy(&listing.stdout);
         if !listing.status.success() || names.lines().any(|n| !safe_entry(n)) {
-            return Err("The WTPocket package contains unsafe or unreadable entries.".into());
+            return Err(t!(
+                "The WTPocket package contains unsafe or unreadable entries.",
+                "WTPocket 安装包包含不安全或无法读取的条目。"
+            ));
         }
         let package = work.join("package");
         fs::create_dir_all(&package).map_err(|e| e.to_string())?;
@@ -191,11 +216,17 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
             .status()
             .map_err(|e| e.to_string())?;
         if !status.success() {
-            return Err("Cannot extract the WTPocket package.".into());
+            return Err(t!(
+                "Cannot extract the WTPocket package.",
+                "无法解压 WTPocket 安装包。"
+            ));
         }
         let installer = package.join("wtpocket.exe");
         if !installer.is_file() {
-            return Err("The WTPocket package is incomplete: missing 'wtpocket.exe'.".into());
+            return Err(t!(
+                "The WTPocket package is incomplete: missing 'wtpocket.exe'.",
+                "WTPocket 安装包不完整：缺少 'wtpocket.exe'。"
+            ));
         }
         let _ = out.flush();
         let status = Command::new(&installer)
@@ -206,7 +237,10 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
         if status.success() {
             Ok(())
         } else {
-            Err("The new package failed to install; the current installation is unchanged.".into())
+            Err(t!(
+                "The new package failed to install; the current installation is unchanged.",
+                "新安装包安装失败，当前安装保持不变。"
+            ))
         }
     })();
     let _ = fs::remove_dir_all(&work);
@@ -216,12 +250,23 @@ pub fn run(update: &Update, current: &str, out: &mut dyn Write) -> Result<(), St
             Ok(true) => {
                 let _ = writeln!(
                     out,
-                    "Stopped the running host; panels were revealed. The new version starts with your next Alt+F."
+                    "{}",
+                    t!(
+                        "Stopped the running host; panels were revealed. The new version starts with your next Alt+F.",
+                        "已停止运行中的后台程序，Panel 已显示。新版本会在你下次按 Alt+F 时启动。"
+                    )
                 );
             }
             Ok(false) => {}
             Err(e) => {
-                let _ = writeln!(out, "Could not stop the running host: {e}");
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    t!(
+                        "Could not stop the running host: {e}",
+                        "无法停止运行中的后台程序：{e}"
+                    )
+                );
             }
         }
     }

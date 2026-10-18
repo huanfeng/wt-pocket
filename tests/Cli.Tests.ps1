@@ -3,6 +3,8 @@
 # state/destination directories and Windows Terminal settings fixtures. Nothing
 # here touches the real profile, state or Windows Terminal settings.
 $ErrorActionPreference = 'Stop'
+# Messages are asserted in English regardless of the machine's display language.
+$env:WTPOCKET_LANG = 'en'
 $root = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('wtpocket-cli-' + [guid]::NewGuid().ToString('N'))
 $originalSession = $env:WT_SESSION
@@ -422,6 +424,19 @@ try {
     $missing = Join-Path $case 'does-not-exist.json'
     $result = Invoke-Install $exeA $destination $profilePath $state @('--terminal-settings', $missing)
     Assert-True ($result.ExitCode -eq 0 -and -not [IO.File]::Exists($missing)) 'A missing settings file is skipped and not created'
+
+    # Output language follows the system language; WTPOCKET_LANG overrides it.
+    $previousEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) # piped output is UTF-8
+    foreach ($case in @(@('en', 'Usage:', 'Hotkeys', 'Show or hide'), @('zh', '用法', '快捷键', '显示或隐藏'), @('zh-CN', '用法', '快捷键', '显示或隐藏'))) {
+        $env:WTPOCKET_LANG = $case[0]
+        $help = Invoke-Wtp $exeA @('help')
+        Assert-True ($help.ExitCode -eq 0 -and $help.Output.Contains($case[1]) -and $help.Output.Contains($case[2]) -and $help.Output.Contains($case[3]) -and $help.Output.Contains('Alt+F') -and $help.Output.Contains('Ctrl+Shift+Alt+F24')) "help prints $($case[0]) text with the hotkey reference"
+        $bad = Invoke-Wtp $exeA @('no-such-command')
+        Assert-True ($bad.ExitCode -ne 0 -and $bad.Output.Contains($case[1])) "An unknown command shows $($case[0]) usage"
+    }
+    $env:WTPOCKET_LANG = 'en'
+    [Console]::OutputEncoding = $previousEncoding
 
     Write-Output "PASS: $script:checks CLI installation checks (isolated profile, state and Terminal settings)."
 } finally {
