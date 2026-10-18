@@ -38,15 +38,18 @@ function Invoke-Open {
     $previous = $env:WT_SESSION
     $env:WT_SESSION = '1'
     try {
-        # `open` leaves the background host running, which inherits any pipe used to
-        # capture output and would keep the capture open forever; redirect to files.
-        $stdout = Join-Path $testRoot 'open.out'
-        $stderr = Join-Path $testRoot 'open.err'
-        $process = Start-Process $exe -ArgumentList @('open', $testRoot, '--state', $testRoot, '--session', 't', '--pwsh', $pwshPath) `
-            -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        # Capturing through pipes also proves the background host does not inherit them.
+        $start = [Diagnostics.ProcessStartInfo]::new($exe)
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in @('open', $testRoot, '--state', $testRoot, '--session', 't', '--pwsh', $pwshPath)) { $start.ArgumentList.Add($argument) }
+        $process = [Diagnostics.Process]::Start($start)
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'wtpocket open did not return.' }
-        $process.WaitForExit()
-        $output = (Get-Content -LiteralPath $stdout, $stderr -Raw -ErrorAction SilentlyContinue) -join "`n"
+        $output = $outTask.Result + "`n" + $errTask.Result
         [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output.Trim() }
     } finally {
         if ($null -eq $previous) { Remove-Item Env:WT_SESSION -ErrorAction SilentlyContinue } else { $env:WT_SESSION = $previous }
