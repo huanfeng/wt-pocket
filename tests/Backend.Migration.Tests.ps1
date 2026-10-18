@@ -68,7 +68,7 @@ try {
     $oldPid = $runningHost.Id
 
     $result = Invoke-Open
-    $hostLog = if (Test-Path (Join-Path $testRoot "host.log")) { Get-Content (Join-Path $testRoot "host.log") -Raw } else { "(no host.log)" }
+    $hostLog = "log=" + $(if (Test-Path (Join-Path $testRoot "host.log")) { Get-Content (Join-Path $testRoot "host.log") -Raw } else { "none" }) + " info=" + $(if (Test-Path $infoPath) { Get-Content $infoPath -Raw } else { "none" }) + " procs=" + ((Get-Process wtpocket -ErrorAction SilentlyContinue | ForEach-Object Id) -join ",") + " exe=" + $exe + " fg=" + (Get-Item $exe).Length
     Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') "open reports the missing Windows Terminal after the handoff (exit $($result.ExitCode): $($result.Output) log: $hostLog)"
     Assert-True ($runningHost.WaitForExit(5000)) 'Legacy backend handoff uses graceful shutdown'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
@@ -80,7 +80,6 @@ try {
     Assert-True (-not $newHost.HasExited) 'The replacement host is running'
 
     $result = Invoke-Open
-    $hostLog = if (Test-Path (Join-Path $testRoot "host.log")) { Get-Content (Join-Path $testRoot "host.log") -Raw } else { "(no host.log)" }
     Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'A repeat open still reaches the host'
     Assert-True ((Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json).pid -eq $newInfo.pid) 'Subsequent opens preserve the running Rust host'
 
@@ -93,7 +92,6 @@ try {
     [IO.File]::WriteAllText($infoPath, (@{ pid = [int]::MaxValue; pipeName = $pipeName } | ConvertTo-Json))
     $newHost.Dispose()
     $result = Invoke-Open
-    $hostLog = if (Test-Path (Join-Path $testRoot "host.log")) { Get-Content (Join-Path $testRoot "host.log") -Raw } else { "(no host.log)" }
     Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'open reaches a fresh host despite stale legacy metadata'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
     Assert-True ($newInfo.backend -eq 'rust') 'Stale legacy metadata does not prevent Rust startup'
