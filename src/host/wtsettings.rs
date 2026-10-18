@@ -71,23 +71,56 @@ fn locate(text: &str, key: &str) -> (Option<usize>, Option<usize>) {
     (found, root)
 }
 
+/// True when the next token after `at`, skipping whitespace and comments, is
+/// not the closing `]` (so a separator comma is needed after our entry).
+fn has_following_item(text: &str, at: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = at;
+    while i < bytes.len() {
+        match bytes[i] {
+            b if b.is_ascii_whitespace() => i += 1,
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b']' => return false,
+            _ => return true,
+        }
+    }
+    false
+}
+
 fn insert_at(text: &mut String, at: usize, entry: &str) {
-    text.insert_str(at, &format!(" {BEGIN} {entry} {END}"));
+    // Windows Terminal rejects a comma before `]`, so only separate real neighbours.
+    let comma = if has_following_item(text, at) {
+        ","
+    } else {
+        ""
+    };
+    text.insert_str(at, &format!(" {BEGIN} {entry}{comma} {END}"));
 }
 
 /// Returns the settings text with the managed binding added or refreshed.
 pub fn add(text: &str) -> Result<String, String> {
     let mut text = remove(text);
     let action = format!(
-        r#"{{ "command": {{ "action": "setFocusMode", "isFocusMode": false }}, "id": "{ID}" }},"#
+        r#"{{ "command": {{ "action": "setFocusMode", "isFocusMode": false }}, "id": "{ID}" }}"#
     );
-    let binding = format!(r#"{{ "id": "{ID}", "keys": "{KEYS}" }},"#);
+    let binding = format!(r#"{{ "id": "{ID}", "keys": "{KEYS}" }}"#);
     for (key, entry) in [("keybindings", binding), ("actions", action)] {
         // Insert the later array first so earlier offsets stay valid.
         match locate(&text, key) {
             (Some(at), _) => insert_at(&mut text, at, &entry),
             (None, Some(root)) => {
-                let list = format!(r#""{key}": [ {BEGIN} {entry} {END} ],"#);
+                let list = format!(r#""{key}": [{BEGIN} {entry} {END}],"#);
                 text.insert_str(root, &format!(" {list}"));
             }
             (None, None) => return Err("settings.json is not a JSON object.".into()),
@@ -107,10 +140,10 @@ pub fn remove(text: &str) -> String {
         let mut stop = begin + end + END.len();
         // A property we created for a missing key is removed whole.
         for key in ["actions", "keybindings"] {
-            let wrapper = format!("\"{key}\": [ ");
-            if result[..begin].ends_with(&wrapper) && result[stop..].starts_with(" ],") {
+            let wrapper = format!("\"{key}\": [");
+            if result[..begin].ends_with(&wrapper) && result[stop..].starts_with("],") {
                 start = begin - wrapper.len();
-                stop += 3;
+                stop += 2;
             }
         }
         // Drop the single separator space insert_at/add put in front.
@@ -157,21 +190,40 @@ mod tests {
         assert!(add("[1, 2]").is_err());
     }
 
-    #[test]
-    fn result_is_valid_jsonc_apart_from_comments() {
-        let added = add(WITH_ARRAYS).unwrap();
-        let stripped = added
+    /// Strict JSON once comments are removed: Windows Terminal rejects trailing commas.
+    fn strict(text: &str) -> serde_json::Value {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            let end = rest[start..].find("*/").unwrap() + start + 2;
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        let lines: Vec<&str> = out
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let cleaned = stripped
-            .replace(BEGIN, "")
-            .replace(END, "")
-            .replace(",\n  ]", "\n  ]");
-        let cleaned = cleaned.replace(", ]", " ]");
-        let value: serde_json::Value = serde_json::from_str(&cleaned).unwrap();
-        assert_eq!(value["actions"][0]["id"], ID);
-        assert_eq!(value["keybindings"][0]["keys"], KEYS);
+            .collect();
+        let joined = lines.join("\n");
+        serde_json::from_str(&joined).unwrap_or_else(|e| panic!("{e}: {joined}"))
+    }
+
+    #[test]
+    fn result_is_strict_json_for_empty_populated_and_missing_arrays() {
+        for source in [
+            WITH_ARRAYS,
+            "{ \"actions\": [], \"keybindings\": [] }",
+            "{ \"actions\": [ ], \"keybindings\": [\n // none\n ] }",
+            "{ \"actions\": [ { \"id\": \"a\" } ] }",
+            "{\n  \"defaultProfile\": \"x\"\n}\n",
+        ] {
+            let added = add(source).unwrap();
+            let value = strict(&added);
+            let actions = value["actions"].as_array().unwrap();
+            assert_eq!(actions.iter().filter(|a| a["id"] == ID).count(), 1);
+            let keys = value["keybindings"].as_array().unwrap();
+            assert_eq!(keys.iter().filter(|k| k["keys"] == KEYS).count(), 1);
+            assert_eq!(remove(&added), source);
+        }
     }
 }
