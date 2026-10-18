@@ -7,6 +7,7 @@ mod ipc;
 mod model;
 mod paths;
 mod profile;
+mod restore;
 #[cfg(test)]
 mod tests;
 mod update;

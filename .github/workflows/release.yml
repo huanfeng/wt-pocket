@@ -59,7 +59,7 @@ jobs:
           cargo test --locked
           if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
           ./scripts/Build.ps1
-          foreach ($test in @('Smoke', 'Cli', 'Startup', 'Backend.Migration')) {
+          foreach ($test in @('Smoke', 'Cli', 'Startup', 'Backend.Migration', 'Restore.Console')) {
             & pwsh -NoLogo -NoProfile -File "tests/$test.Tests.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$test tests failed" }
           }

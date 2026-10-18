@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New `wtpocket restore` (short form `r`): lists recently closed tabs by directory and reopens the ones you pick in the current Windows Terminal window. Navigate with the arrow keys, select with Space, confirm with Enter, cancel with Esc. Only directories are recorded, one small file per terminal session under `sessions\`; no commands.
+
 ## v0.3.2
 
 - Command-line output is now Chinese or English according to the Windows display language (override with `WTPOCKET_LANG=zh|en`), and `help` and `install` print a short hotkey reference.

@@ -425,6 +425,55 @@ try {
     $result = Invoke-Install $exeA $destination $profilePath $state @('--terminal-settings', $missing)
     Assert-True ($result.ExitCode -eq 0 -and -not [IO.File]::Exists($missing)) 'A missing settings file is skipped and not created'
 
+    # restore: recent closed sessions by directory, reopened through wt.exe.
+    $restoreCase = New-Case 'restore'
+    $restoreState = Join-Path $restoreCase 'state'
+    $sessionsDir = Join-Path $restoreState 'sessions'
+    [IO.Directory]::CreateDirectory($sessionsDir) | Out-Null
+    $dirOld = New-Case 'restore/dir-old'; $dirNew = New-Case 'restore/dir new'; $dirOpen = New-Case 'restore/dir-open'
+    $missing = Join-Path $restoreCase 'deleted-directory'
+    $nowSeconds = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $selfStart = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
+    function Write-Session([string] $Path, [long] $Age, [int] $ProcessId = 0, [long] $Started = 1, [string] $Profile = '') {
+        $json = [ordered]@{ path = $Path; profile = $Profile; pid = $ProcessId; started = $Started; updated = $nowSeconds - $Age } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText((Join-Path $sessionsDir ([guid]::NewGuid().ToString() + '.json')), $json, $utf8)
+    }
+    Write-Session $dirOld 7200
+    Write-Session $dirNew 120 -Profile '{574e775e-4f2a-5b96-ac1e-a2962a402336}'
+    Write-Session ($dirNew + '\') 4000      # same directory, older: listed once
+    Write-Session $missing 60               # directory is gone
+    Write-Session $dirOpen 30 $PID $selfStart   # still open in a live shell
+    Write-Session $dirOpen 9000 999999 1    # an older closed tab of that open directory
+    Write-Session (Join-Path $restoreCase 'ancient') (40 * 86400)   # beyond the retention window
+    $ancientDir = New-Case 'restore/ancient'
+    Write-Session $ancientDir (40 * 86400)
+    $listed = Invoke-Wtp $exeA @('restore', '--list', '--state', $restoreState)
+    $lines = @($listed.Output -split "`n" | Where-Object { $_.Trim() })
+    Assert-True ($listed.ExitCode -eq 0 -and $lines.Count -eq 2) "restore --list shows only closed, existing, recent, distinct directories ($($listed.Output))"
+    Assert-True ($lines[0].Contains($dirNew) -and $lines[1].Contains($dirOld)) 'Sessions are listed most recent first'
+    Assert-True ((Get-ChildItem -LiteralPath $sessionsDir -Filter *.json).Count -eq 6) 'Records beyond the retention window are deleted when listing'
+    $short = Invoke-Wtp $exeA @('r', '--list', '--state', $restoreState)
+    Assert-True ($short.ExitCode -eq 0 -and $short.Output -ceq $listed.Output) 'r is a short form of restore'
+
+    $recordFile = Join-Path $restoreCase 'wt-args.txt'
+    $fakeWt = Join-Path $restoreCase 'fake-wt.cmd'
+    [IO.File]::WriteAllText($fakeWt, "@echo off`r`necho %*> `"%ST_RECORD%`"`r`nexit /b %ERRORLEVEL%`r`n")
+    $env:ST_RECORD = $recordFile
+    try {
+        $picked = Invoke-Wtp $exeA @('restore', '--select', '1,2', '--wt-exe', $fakeWt, '--state', $restoreState)
+    } finally { Remove-Item Env:ST_RECORD -ErrorAction SilentlyContinue }
+    $recorded = if ([IO.File]::Exists($recordFile)) { [IO.File]::ReadAllText($recordFile).Trim() } else { '' }
+    Assert-True ($picked.ExitCode -eq 0 -and $picked.Output -match '2') "restore --select reopens the chosen sessions ($($picked.Output))"
+    # Rust quotes more arguments when the target is a .cmd stub, so compare without quotes (restore.rs unit tests pin the exact argument vector).
+    $expected = "-w 0 new-tab -p {574e775e-4f2a-5b96-ac1e-a2962a402336} -d $dirNew ; new-tab -d $dirOld"
+    Assert-True (($recorded -replace '"', '') -ceq $expected) "One wt command opens a tab per session with its profile and directory ($recorded)"
+    $bad = Invoke-Wtp $exeA @('restore', '--select', '9', '--wt-exe', $fakeWt, '--state', $restoreState)
+    Assert-True ($bad.ExitCode -ne 0 -and $bad.Output -match '9') 'An out-of-range selection is rejected'
+    $empty = Invoke-Wtp $exeA @('restore', '--list', '--state', (Join-Path $restoreCase 'nothing-recorded'))
+    Assert-True ($empty.ExitCode -eq 0 -and $empty.Output -match 'No recent sessions') 'With nothing recorded restore says so instead of failing'
+    $headless = Invoke-Wtp $exeA @('restore', '--state', $restoreState)
+    Assert-True ($headless.ExitCode -ne 0 -and $headless.Output -match 'interactive') 'Without a console the picker explains how to use --list and --select'
+
     # Output language follows the system language; WTPOCKET_LANG overrides it.
     $previousEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) # piped output is UTF-8

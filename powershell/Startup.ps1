@@ -42,40 +42,50 @@ if ($wtpocketCurrent.Provider.Name -eq 'FileSystem' -and $wtpocketCurrent.Provid
         if ([IO.Directory]::Exists($wtpocketSaved)) { Set-Location -LiteralPath $wtpocketSaved }
     }
 }
+# One small file per terminal session feeds `wtpocket restore`; it records only
+# the directory. Skipped when WT_SESSION is not a GUID.
+if ($env:WT_SESSION -match '^[0-9A-Fa-f-]{36}$') {
+    $wtpocketContext.SessionFile = [IO.Path]::Combine($wtpocketContext.StateRoot, 'sessions', $env:WT_SESSION + '.json')
+    $wtpocketContext.SessionIdentity = '"profile":"' + $env:WT_PROFILE_ID + '","pid":' + $PID + ',"started":' + [Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
+}
+# Persist the directory: one file per Windows Terminal profile (where new tabs
+# start) and one per terminal session (for restore). Never throws.
+$wtpocketContext.Save = {
+    param([string] $Directory)
+    $state = $wtpocketContext
+    $writes = @(, @($state.DirectoryFile, $Directory))
+    if ($state.SessionFile) {
+        $json = '{"path":"' + $Directory.Replace('\', '\\').Replace('"', '\"') + '",' + $state.SessionIdentity + ',"updated":' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + '}'
+        $writes += , @($state.SessionFile, $json)
+    }
+    foreach ($write in $writes) {
+        $temporary = $null
+        try {
+            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($write[0])) | Out-Null
+            $temporary = $write[0] + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+            [IO.File]::WriteAllText($temporary, $write[1])
+            [IO.File]::Move($temporary, $write[0], $true)
+        } catch {
+            Write-Verbose "wtpocket could not save the directory: $_"
+        } finally {
+            if ($temporary -and [IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+        }
+    }
+}.GetNewClosure()
 $wtpocketContext.LocationHandler = [System.EventHandler[Management.Automation.LocationChangedEventArgs]] ({
     param($sender, $eventArgs)
     $state = $wtpocketContext
     if ($state.PreviousLocationHandler) { $state.PreviousLocationHandler.Invoke($sender, $eventArgs) }
     if ($eventArgs.NewPath.Provider.Name -ne 'FileSystem') { return }
-    $temporary = $null
-    try {
-        [IO.Directory]::CreateDirectory($state.StateRoot) | Out-Null
-        $temporary = $state.DirectoryFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-        [IO.File]::WriteAllText($temporary, $eventArgs.NewPath.ProviderPath)
-        [IO.File]::Move($temporary, $state.DirectoryFile, $true)
-    } catch {
-        Write-Verbose "wtpocket could not save the directory: $_"
-    } finally {
-        if ($temporary -and [IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
-    }
+    & $state.Save $eventArgs.NewPath.ProviderPath
 }.GetNewClosure())
 $ExecutionContext.InvokeCommand.LocationChangedAction = $wtpocketContext.LocationHandler
 
 # Record an explicit starting directory even if the user never calls cd.
+# The installed handler is not called: that would notify the user's own
+# handler about a synthetic event.
 $wtpocketNow = Get-Location
-if ($wtpocketNow.Provider.Name -eq 'FileSystem') {
-    # Calling the installed handler would also call the user's handler for a
-    # synthetic event. Write this initial value without notifying them.
-    $wtpocketInitial = $null
-    try {
-        [IO.Directory]::CreateDirectory($wtpocketContext.StateRoot) | Out-Null
-        $wtpocketInitial = $wtpocketContext.DirectoryFile + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-        [IO.File]::WriteAllText($wtpocketInitial, $wtpocketNow.ProviderPath)
-        [IO.File]::Move($wtpocketInitial, $wtpocketContext.DirectoryFile, $true)
-    } catch { Write-Verbose "wtpocket could not save the directory: $_" }
-    finally { if ($wtpocketInitial -and [IO.File]::Exists($wtpocketInitial)) { [IO.File]::Delete($wtpocketInitial) } }
-}
-
+if ($wtpocketNow.Provider.Name -eq 'FileSystem') { & $wtpocketContext.Save $wtpocketNow.ProviderPath }
 if (-not (Get-Module PSReadLine)) { Import-Module PSReadLine -ErrorAction Stop }
 Set-PSReadLineKeyHandler -Chord 'Alt+f' -BriefDescription WtPocketPanel -LongDescription 'Show or hide the WTPocket terminal panel' -ScriptBlock {
     try {

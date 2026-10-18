@@ -352,6 +352,47 @@ Emit @{
     Assert-True (@($r.registryWarnings).Count -eq 1 -and $r.registryWarnings[0] -like '*filesystem*') 'A non-filesystem location warns instead of launching'
     Assert-True (-not $r.registryLaunched) 'A non-filesystem location never starts wtpocket'
 
+    # --- Session records feed `wtpocket restore`: one file per terminal session, directory only.
+    $sessionId = [guid]::NewGuid().ToString()
+    $profileId = '{574e775e-4f2a-5b96-ac1e-a2962a402336}'
+    $recorded = Invoke-Child @'
+$before = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+Set-Location -LiteralPath $Work
+. $Shim -StateRoot $Root
+$file = Join-Path (Join-Path $Root 'sessions') ($env:WT_SESSION + '.json')
+$first = Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json
+Set-Location -LiteralPath $Temp
+$second = Get-Content -LiteralPath $file -Raw -Encoding utf8 | ConvertFrom-Json
+Emit @{
+    work = $Work; temp = $Temp; before = $before; pid = $PID
+    firstPath = $first.path; firstProfile = $first.profile; firstPid = $first.pid; firstStarted = $first.started; firstUpdated = $first.updated
+    secondPath = $second.path
+    started = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
+    files = @(Get-ChildItem -LiteralPath (Join-Path $Root 'sessions') | ForEach-Object Name)
+    keys = @($first.PSObject.Properties.Name)
+}
+'@ @{ WT_SESSION = $sessionId; WT_PROFILE_ID = $profileId; ST_ROOT = (Join-Path $temp 'sessions-state') }
+    $r = $recorded.Result
+    Assert-True ($r.firstPath -ceq $r.work) 'The session file records the starting directory (with quotes, brackets and Unicode intact)'
+    Assert-True ($r.secondPath -ceq $r.temp) 'Changing directory updates the session file'
+    Assert-True ($r.firstProfile -ceq $profileId -and $r.firstPid -eq $r.pid -and $r.firstStarted -eq $r.started) 'The session file identifies its profile and shell process'
+    Assert-True ($r.firstUpdated -ge $r.before) 'The session file carries an update time'
+    Assert-True ((@($r.keys) -join ',') -ceq 'path,profile,pid,started,updated') 'The session file stores only the directory and its identity (no commands)'
+    Assert-True (@($r.files).Count -eq 1 -and $r.files[0] -ceq "$sessionId.json") 'One file per terminal session, named after WT_SESSION'
+
+    $notRecorded = Invoke-Child @'
+Set-Location -LiteralPath $Work
+. $Shim -StateRoot $Root
+Emit @{ exists = [IO.Directory]::Exists((Join-Path $Root 'sessions')) }
+'@ @{ WT_SESSION = 'not-a-guid'; ST_ROOT = (Join-Path $temp 'no-sessions-state') }
+    Assert-True (-not $notRecorded.Result.exists) 'A WT_SESSION that is not a GUID is never turned into a file name'
+    $panel = Invoke-Child @'
+Set-Location -LiteralPath $Work
+. $Shim -StateRoot $Root
+Emit @{ exists = [IO.Directory]::Exists((Join-Path $Root 'sessions')) }
+'@ @{ WT_SESSION = [guid]::NewGuid().ToString(); WTTOOLS_PANEL = '1'; ST_ROOT = (Join-Path $temp 'panel-state') }
+    Assert-True (-not $panel.Result.exists) 'Panel shells record nothing'
+
     Write-Output "PASS: $script:checks startup checks"
 } finally {
     if ([IO.Path]::GetFullPath($temp).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) {

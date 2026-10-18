@@ -3,6 +3,7 @@ use crate::{
     client::{self, OpenArgs},
     install::{self, Options, TerminalSettings},
     paths::Layout,
+    restore,
     update::{self, Update},
     version, win,
 };
@@ -16,6 +17,7 @@ Usage: wtpocket <command> [options]
 Commands:
   open [DIR]     Show or hide the panel for the current terminal (default: current directory)
   stop           Stop the background host; panels are revealed and keep running
+  restore (r)    Pick recently closed tabs (by directory) and reopen them; --list only prints them
   update         Install the latest release (--version vX.Y.Z for a specific one, --force to reinstall)
   install        Install this package and enable it for new PowerShell sessions
   uninstall      Disable WTPocket for new shells; installed files are kept
@@ -35,6 +37,7 @@ Options (install, uninstall, update, open, stop):
 命令：
   open [目录]    显示或隐藏当前终端的 Panel（默认使用当前目录）
   stop           停止后台程序；Panel 会被显示出来并继续运行
+  restore (r)    选择最近关闭的标签页（按目录）并重新打开；--list 只列出不打开
   update         安装最新版本（--version vX.Y.Z 指定版本，--force 重新安装）
   install        安装当前安装包，并为新的 PowerShell 会话启用
   uninstall      为新的 Shell 停用 WTPocket；已安装的文件会保留
@@ -66,6 +69,9 @@ struct Parsed {
     skip_terminal: bool,
     force: bool,
     no_stop: bool,
+    list: bool,
+    select: Option<String>,
+    wt_exe: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Parsed, String> {
@@ -98,6 +104,10 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             "--no-terminal-settings" => parsed.skip_terminal = true,
             "--force" => parsed.force = true,
             "--no-stop" => parsed.no_stop = true,
+            "--list" => parsed.list = true,
+            // Hidden: pick sessions without the interactive list, and choose the wt executable.
+            "--select" => parsed.select = Some(value("--select")?),
+            "--wt-exe" => parsed.wt_exe = Some(value("--wt-exe")?.into()),
             other if other.starts_with("--") => {
                 return Err(t!("Unknown option '{other}'.", "未知选项 '{other}'。"));
             }
@@ -214,6 +224,15 @@ pub fn run(command: &str, args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "restore" | "r" => restore::run(
+            &restore::Args {
+                state: parsed.layout()?.state,
+                list: parsed.list,
+                select: parsed.select.clone(),
+                wt_exe: parsed.wt_exe.clone(),
+            },
+            &mut out,
+        ),
         "install" => install::install(&parsed.options()?, &mut out).map(drop),
         "uninstall" => {
             let options = parsed.options()?;

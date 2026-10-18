@@ -53,6 +53,7 @@ pwsh -NoProfile -File ./install.ps1 -Version v0.3.2
 | 命令 | 作用 |
 | --- | --- |
 | `wtpocket open [目录]` | 显示或隐藏当前终端的 Panel，等同于 Alt+F；`目录` 只决定新 Panel 的初始目录 |
+| `wtpocket restore`（缩写 `wtpocket r`） | 列出最近关闭的标签页目录，多选后一次重新打开；`--list` 只列出不打开 |
 | `wtpocket stop` | 停止后台控制程序，显示仍存活的 Panel（不结束它们的 Shell） |
 | `wtpocket update` | 检查并安装最新 Release；`--version vX.Y.Z` 指定版本，`--force` 强制重装 |
 | `wtpocket uninstall` | 停用新 Shell 中的 WTPocket，保留安装文件、目录记忆和备份 |
@@ -76,6 +77,21 @@ Panel 使用 WT 焦点模式隐藏标题栏和标签栏，初始约为来源窗�
 
 关联不依赖标签页标题：在 Panel 中新建或切换标签页、运行改变标题的程序，仍能显示或隐藏同一窗口。直接把标签页拖出成为另一窗口时，关联不会自动迁移。
 
+### 恢复最近的会话
+
+每个 PowerShell 标签页每次切换目录时，接入脚本会在状态目录的 `sessions\` 下为该终端会话写一个小文件，**只记录目录**（以及所属的 Windows Terminal 配置和 Shell 进程号，用来判断它是否还开着），不记录命令。
+
+`wtpocket restore`（或 `wtpocket r`）会列出最近 30 天内已关闭的会话目录，最近的在前：
+
+| 按键 | 作用 |
+| --- | --- |
+| ↑ / ↓（或 k / j） | 移动光标（到顶部/底部会循环），PageUp / PageDown / Home / End 也可用 |
+| 空格 | 选中或取消当前行 |
+| A | 全选 / 取消全选 |
+| 回车 | 确认；没有选中任何行时，恢复光标所在的那一行 |
+| Esc（或 Ctrl+C） | 取消，什么都不打开 |
+
+确认后用一条 `wt.exe` 命令在当前 Windows Terminal 窗口里为每个目录新开一个标签页（沿用原来的配置）。不会列出仍在使用中的目录、已不存在的目录，同一目录只出现一次。超过 30 天的记录在列出时自动清理。`--list` 可在脚本中使用，非交互终端里请用 `--list` 查看，再用 `--select 1,3` 直接恢复。
 ### 窗口残留与标题栏
 
 主窗口关闭后，其 Panel 不会留在不可见状态：约 2 秒内，后台会把它重新显示出来，解除与主窗口的关联，并恢复标题栏和标签栏，让它成为一个普通的 Windows Terminal 窗口。窗口里的 Shell 和命令继续运行，之后由你自行关闭。`wtpocket stop` 和卸载时也是同样处理。
@@ -193,6 +209,8 @@ src/host/                 wtpocket 的全部逻辑
   main.rs / cli.rs          入口、命令分发；窗口管理、快捷键钩子、孤立恢复
   client.rs / ipc.rs        命名管道客户端（open/stop）与服务端
   install.rs / update.rs    安装卸载、在线更新
+  restore.rs                最近会话列表与多选恢复（restore / r）
+  i18n.rs                   中英文输出选择
   profile.rs / wtsettings.rs  PowerShell 配置块与 WT 设置绑定的文本编辑
   win.rs / model.rs         Win32 封装、几何与协议模型
 scripts/                  构建、打包、许可声明

@@ -327,3 +327,23 @@ pub fn restore_title_bar(window: isize) {
         );
     }
 }
+
+/// Creation time (FILETIME ticks) of a running process, used to tell a live
+/// shell from a recycled process id.
+pub fn process_start(pid: u32) -> Option<u64> {
+    let process = Handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) });
+    if process.0.is_null() {
+        return None;
+    }
+    let zero = FILETIME::default();
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    if unsafe { GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) } == 0
+    {
+        return None;
+    }
+    // A finished process whose handle is still open has an exit time.
+    if exited.dwHighDateTime != 0 || exited.dwLowDateTime != 0 {
+        return None;
+    }
+    Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
