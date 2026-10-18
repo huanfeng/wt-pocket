@@ -425,6 +425,20 @@ fn wt_exe(requested: Option<&Path>) -> Result<PathBuf, String> {
         })
 }
 
+/// `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`, the only profile form handed to wt.
+fn is_profile_guid(text: &str) -> bool {
+    text.len() == 38
+        && text.starts_with('{')
+        && text.ends_with('}')
+        && text[1..37].chars().enumerate().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
 /// One `wt` command line that opens every session as a tab of the current window.
 fn wt_args(sessions: &[&Session]) -> Vec<String> {
     let mut args: Vec<String> = vec!["-w".into(), "0".into()];
@@ -433,7 +447,7 @@ fn wt_args(sessions: &[&Session]) -> Vec<String> {
             args.push(";".into());
         }
         args.push("new-tab".into());
-        if session.profile.starts_with('{') && session.profile.ends_with('}') {
+        if is_profile_guid(&session.profile) {
             args.push("-p".into());
             args.push(session.profile.clone());
         }
@@ -443,7 +457,11 @@ fn wt_args(sessions: &[&Session]) -> Vec<String> {
         } else {
             &session.path
         };
-        args.push(directory.to_string());
+        // wt splits its command line at a trailing `;`; `\;` is its escape for a literal one.
+        args.push(match directory.strip_suffix(';') {
+            Some(stem) => format!(r"{stem}\;"),
+            None => directory.to_string(),
+        });
     }
     args
 }
@@ -663,6 +681,20 @@ mod tests {
                 r"D:\"
             ]
         );
+    }
+
+    #[test]
+    fn wt_args_neutralize_separators_and_reject_non_guid_profiles() {
+        let hostile = Session {
+            profile: r"{x}; new-tab -d C:\evil".into(),
+            ..session(r"C:\odd;", 1, 0)
+        };
+        let args = wt_args(&[&hostile]);
+        assert_eq!(args, ["-w", "0", "new-tab", "-d", r"C:\odd\;"]);
+        assert!(is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a402336}"));
+        assert!(!is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a40233}"));
+        assert!(!is_profile_guid("{574e775e-4f2a-5b96-ac1e-a2962a40233g}"));
+        assert!(!is_profile_guid(""));
     }
 
     #[test]
