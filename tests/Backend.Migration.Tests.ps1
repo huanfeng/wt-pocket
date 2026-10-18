@@ -65,7 +65,7 @@ try {
     $oldPid = $runningHost.Id
 
     $result = Invoke-Open
-    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') 'open reports the missing Windows Terminal after the handoff'
+    Assert-True ($result.ExitCode -ne 0 -and $result.Output -match 'Windows Terminal') "open reports the missing Windows Terminal after the handoff (exit $($result.ExitCode): $($result.Output))"
     Assert-True ($runningHost.WaitForExit(5000)) 'Legacy backend handoff uses graceful shutdown'
     $newInfo = Get-Content -LiteralPath $infoPath -Raw | ConvertFrom-Json
     Assert-True ($newInfo.backend -eq 'rust') 'The replacement host records the rust backend'
