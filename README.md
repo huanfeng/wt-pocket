@@ -32,10 +32,10 @@ Get-Content ./install.ps1
 pwsh -NoProfile -File ./install.ps1
 ```
 
-指定版本安装，例如 `v0.3.2`：
+指定版本安装，例如 `v0.4.0`：
 
 ```powershell
-pwsh -NoProfile -File ./install.ps1 -Version v0.3.2
+pwsh -NoProfile -File ./install.ps1 -Version v0.4.0
 ```
 
 也可从 [Releases](https://github.com/huanfeng/wt-pocket/releases) 下载适合架构的 ZIP 和校验文件，核对 `Get-FileHash <压缩包> -Algorithm SHA256` 后解压，在解压目录中执行：
@@ -157,7 +157,7 @@ pwsh -NoProfile -File ./scripts/Build.ps1
 
 默认构建当前机器架构。交叉构建 ARM64 还需对应的 Rust target 和 Visual Studio ARM64 工具；CI/Release 分别在 x64、ARM64 Windows 机器上原生构建和测试。
 
-本机打包可执行 `./scripts/Package.ps1 -Version 0.3.2 -Runtime win-x64`。生成许可声明需要 `rustup component add rust-docs`；这只影响开发机打包，不是用户安装依赖。
+本机打包可执行 `./scripts/Package.ps1 -Version 0.4.0 -Runtime win-x64`。生成许可声明需要 `rustup component add rust-docs`；这只影响开发机打包，不是用户安装依赖。
 
 自动检查不依赖 Pester：
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
 
 - New `wtpocket restore` (short form `r`): lists recently closed tabs by directory and reopens the ones you pick in the current Windows Terminal window. Navigate with the arrow keys, select with Space, confirm with Enter, cancel with Esc. Only directories are recorded, one small file per terminal session under `sessions\`; no commands.
 
