@@ -48,11 +48,12 @@ pwsh -NoProfile -File ./install.ps1 -Version v0.4.0
 
 ## 命令
 
-安装后，新开的 PowerShell 标签页里有 `wtpocket` 命令：
+安装后，新开的 PowerShell 标签页里有 `wtpocket` 命令，简写为 `wtp`（如 `wtp r`、`wtp run claude`）：
 
 | 命令 | 作用 |
 | --- | --- |
 | `wtpocket open [目录]` | 显示或隐藏当前终端的 Panel，等同于 Alt+F；`目录` 只决定新 Panel 的初始目录 |
+| `wtpocket run <程序> [参数...]` | 运行 claude、vim、ssh 等前台程序，运行期间按 Alt+F 仍能呼出 Panel（见下文“前台程序中使用 Alt+F”） |
 | `wtpocket restore`（缩写 `wtpocket r`） | 列出最近关闭的标签页目录，多选后一次重新打开；`--list` 只列出不打开 |
 | `wtpocket stop` | 停止后台控制程序，显示仍存活的 Panel（不结束它们的 Shell） |
 | `wtpocket update` | 检查并安装最新 Release；`--version vX.Y.Z` 指定版本，`--force` 强制重装 |
@@ -76,6 +77,22 @@ pwsh -NoProfile -File ./install.ps1 -Version v0.4.0
 Panel 使用 WT 焦点模式隐藏标题栏和标签栏，初始约为来源窗口宽度的 68%、高度的 60%，尺寸限制在显示器工作区内。重新显示时保留位置、大小、目录和运行状态，支持不同缩放比例的多显示器。
 
 关联不依赖标签页标题：在 Panel 中新建或切换标签页、运行改变标题的程序，仍能显示或隐藏同一窗口。直接把标签页拖出成为另一窗口时，关联不会自动迁移。
+
+### 前台程序中使用 Alt+F
+
+主终端的 Alt+F 由 PSReadLine 处理，只在 PowerShell 等待输入时生效；运行 claude、vim、ssh 等程序时，按键由该程序接收。需要在这类程序中呼出 Panel 时，用 `wtp run` 启动它：
+
+```powershell
+wtp run claude
+wtp run claude --continue   # 参数原样传给程序
+```
+
+`run` 在私有的伪控制台中运行程序，转发全部输入输出，只拦截 Alt+F 来显示或隐藏当前标签页的 Panel（与在提示符下按 Alt+F 打开的是同一个 Panel，初始目录为运行命令时的目录）；退出码原样返回。只按需手动使用，不会自动包装任何命令。
+
+- 程序按 PATH 和 PATHEXT 查找，npm 安装的 `.cmd` 包装脚本也可以运行；PowerShell 的别名和函数不能这样运行。
+- 程序多经过一层伪控制台，个别终端特性（如 Shell 集成标记、图片协议）可能不可用。
+- 不在 Windows Terminal 中，或输入输出被重定向时，`run` 直接运行程序，不拦截按键。
+- 排查问题时可设置 `WTPOCKET_RUN_TRACE=1`，记录写入 `%TEMP%\wtpocket-run.log`。**它会记录每一次按键**，用完请删除。
 
 ### 恢复最近的会话
 
@@ -135,7 +152,7 @@ wtpocket uninstall
 
 ## 使用边界
 
-- 主终端的 Alt+F 由 PSReadLine 处理，仅在 PowerShell 等待输入时生效；在主终端运行编辑器、SSH 等前台程序时不能呼出 Panel。Panel 内的 Alt+F 由控制程序处理，运行命令时也能隐藏。
+- 主终端的 Alt+F 由 PSReadLine 处理，仅在 PowerShell 等待输入时生效；在主终端运行编辑器、SSH 等前台程序时不能呼出 Panel，除非用 `wtp run` 启动它们。Panel 内的 Alt+F 由控制程序处理，运行命令时也能隐藏。
 - 目前支持本地 PowerShell 的文件系统目录，不支持 WSL、Git Bash、注册表目录。
 - Panel 是独立 WT 窗口，不嵌入主终端，不跟随主窗口连续移动，也不强制全局置顶。
 - 使用相同权限级别的终端；管理员 WT 与普通权限控制程序混用未验证。
@@ -203,13 +220,14 @@ git push origin vX.Y.Z
 
 ```text
 install.ps1               在线安装入口：下载、校验，然后运行 wtpocket.exe install
-powershell/Startup.ps1    PowerShell 接入：目录记忆、Alt+F、wtpocket 命令
+powershell/Startup.ps1    PowerShell 接入：目录记忆、Alt+F、wtpocket / wtp 命令
 Cargo.toml / Cargo.lock   Rust 构建与锁定依赖
 src/host/                 wtpocket 的全部逻辑
   main.rs / cli.rs          入口、命令分发；窗口管理、快捷键钩子、孤立恢复
   client.rs / ipc.rs        命名管道客户端（open/stop）与服务端
   install.rs / update.rs    安装卸载、在线更新
   restore.rs                最近会话列表与多选恢复（restore / r）
+  run.rs                    伪控制台转发，前台程序中的 Alt+F（run）
   i18n.rs                   中英文输出选择
   profile.rs / wtsettings.rs  PowerShell 配置块与 WT 设置绑定的文本编辑
   win.rs / model.rs         Win32 封装、几何与协议模型

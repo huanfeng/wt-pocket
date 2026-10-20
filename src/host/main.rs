@@ -8,6 +8,7 @@ mod model;
 mod paths;
 mod profile;
 mod restore;
+mod run;
 #[cfg(test)]
 mod tests;
 mod update;
@@ -503,6 +504,15 @@ fn main() -> ExitCode {
                     let _ = fs::create_dir_all(state);
                     append_log(Path::new(state), &error.to_string());
                 }
+                ExitCode::FAILURE
+            }
+        },
+        // Kept out of cli::run: everything after `run` belongs to the program.
+        "run" => match run::run(&arguments[1..]) {
+            // The program's full exit code, which ExitCode cannot carry.
+            Ok(code) => std::process::exit(code as i32),
+            Err(error) => {
+                eprintln!("wtpocket: {error}");
                 ExitCode::FAILURE
             }
         },

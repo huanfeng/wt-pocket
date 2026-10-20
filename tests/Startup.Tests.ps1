@@ -146,7 +146,7 @@ Emit @{
     $allowedVariables = @('Shim', 'Root', 'Work', 'Temp', 'StateRoot', 'WtPocketState')
     $leakedVariables = @($cold.Result.newVariables | Where-Object { $_ -notin $allowedVariables -and $_ -notlike 'wtpocket*' })
     Assert-True ($leakedVariables.Count -eq 0) "Shim leaks no undocumented variables (found: $($leakedVariables -join ', '))"
-    Assert-True ((@($cold.Result.newFunctions) -join ',') -eq 'wtpocket') "Shim defines only the wtpocket function (found: $($cold.Result.newFunctions -join ', '))"
+    Assert-True ((@($cold.Result.newFunctions | Sort-Object) -join ',') -eq 'wtp,wtpocket') "Shim defines only the wtpocket and wtp functions (found: $($cold.Result.newFunctions -join ', '))"
 
     # --- The wtpocket function runs the sibling executable.
     $versionRun = Invoke-Child @'
@@ -154,11 +154,13 @@ Emit @{
 $sibling = Join-Path (Split-Path $Shim) 'wtpocket.exe'
 $viaFunction = (wtpocket version | Out-String).Trim()
 $direct = (& $sibling version | Out-String).Trim()
-Emit @{ viaFunction = $viaFunction; direct = $direct; kind = (Get-Command wtpocket).CommandType.ToString(); exeIsSibling = ($global:WtPocketState.Exe -ceq $sibling) }
+$viaShort = (wtp version | Out-String).Trim()
+Emit @{ viaFunction = $viaFunction; viaShort = $viaShort; direct = $direct; kind = (Get-Command wtpocket).CommandType.ToString(); exeIsSibling = ($global:WtPocketState.Exe -ceq $sibling) }
 '@
     Assert-True ($versionRun.Result.kind -eq 'Function') 'wtpocket is a function'
     Assert-True ($versionRun.Result.viaFunction -match '\d+\.\d+\.\d+') "wtpocket version prints a version (got '$($versionRun.Result.viaFunction)')"
     Assert-True ($versionRun.Result.viaFunction -ceq $versionRun.Result.direct) 'wtpocket function runs the sibling executable'
+    Assert-True ($versionRun.Result.viaShort -ceq $versionRun.Result.direct) 'wtp is the same command as wtpocket'
 
     # --- No WT_SESSION: nothing is defined, nothing is written.
     $outside = Invoke-Child @'

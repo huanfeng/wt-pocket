@@ -12,10 +12,11 @@ use std::{io, path::PathBuf};
 pub fn usage() -> String {
     let body = t!(
         "\
-Usage: wtpocket <command> [options]
+Usage: wtpocket <command> [options]   (short form: wtp)
 
 Commands:
   open [DIR]     Show or hide the panel for the current terminal (default: current directory)
+  run CMD [ARGS] Run a program (e.g. claude) so Alt+F works while it runs
   stop           Stop the background host; panels are revealed and keep running
   restore (r)    Pick recently closed tabs (by directory) and reopen them; --list only prints them
   update         Install the latest release (--version vX.Y.Z for a specific one, --force to reinstall)
@@ -32,10 +33,11 @@ Options (install, uninstall, update, open, stop):
   --no-stop                (update) Keep the running host
 ",
         "\
-用法：wtpocket <命令> [选项]
+用法：wtpocket <命令> [选项]   （简写：wtp）
 
 命令：
   open [目录]    显示或隐藏当前终端的 Panel（默认使用当前目录）
+  run 命令 [参数] 运行程序（如 claude），运行期间 Alt+F 仍然可用
   stop           停止后台程序；Panel 会被显示出来并继续运行
   restore (r)    选择最近关闭的标签页（按目录）并重新打开；--list 只列出不打开
   update         安装最新版本（--version vX.Y.Z 指定版本，--force 重新安装）

@@ -6,7 +6,7 @@ param(
 # This file runs in the caller's profile scope. Keep all persistent state in one
 # object so profile variables and other LocationChangedAction users stay intact.
 # Everything heavy lives in wtpocket.exe; this shim only remembers directories,
-# binds Alt+F and defines the `wtpocket` command.
+# binds Alt+F and defines the `wtpocket` command (and its short form `wtp`).
 if (-not $IsWindows -or -not $env:WT_SESSION) { return }
 if ($ExecutionContext.SessionState.PSVariable.GetValue('global:WtPocketState')) { return }
 $wtpocketExe = [IO.Path]::Combine($PSScriptRoot, 'wtpocket.exe')
@@ -27,6 +27,7 @@ $wtpocketContext = @{
 $global:WtPocketState = $wtpocketContext
 
 function global:wtpocket { & $global:WtPocketState.Exe @args }
+function global:wtp { & $global:WtPocketState.Exe @args }
 
 # A panel is just a shell: it needs neither directory memory nor the hotkey
 # (the host handles Alt+F for it).
