@@ -47,14 +47,14 @@ jobs:
       - name: Package native release
         env:
           PACKAGE_RUNTIME: ${{ matrix.runtime }}
-        run: ./scripts/Package.ps1 -Version 0.4.0 -Runtime $env:PACKAGE_RUNTIME
+        run: ./scripts/Package.ps1 -Version 0.5.0 -Runtime $env:PACKAGE_RUNTIME
       - name: Offline release installer tests
         env:
           PACKAGE_RUNTIME: ${{ matrix.runtime }}
-        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/v0.4.0/wtpocket-v0.4.0-$env:PACKAGE_RUNTIME.zip" -ChecksumPath ./artifacts/release/v0.4.0/SHA256SUMS
+        run: ./tests/Install.Release.Tests.ps1 -ArchivePath "./artifacts/release/v0.5.0/wtpocket-v0.5.0-$env:PACKAGE_RUNTIME.zip" -ChecksumPath ./artifacts/release/v0.5.0/SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
           name: wtpocket-ci-${{ matrix.runtime }}
-          path: artifacts/release/v0.4.0/*
+          path: artifacts/release/v0.5.0/*
           if-no-files-found: error
           retention-days: 7

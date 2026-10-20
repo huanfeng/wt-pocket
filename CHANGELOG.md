@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0
 
 - New `wtpocket run <program> [args...]`: runs a program such as claude, vim or ssh in a private pseudo console so Alt+F still toggles the tab's panel while it runs (the same panel the prompt's Alt+F opens, starting in the current directory). Everything else is relayed unchanged and the exit code is passed through. It is only used when you type it; nothing is wrapped automatically.
 - New `wtp` command, a short form of `wtpocket` (`wtp r`, `wtp run claude`).
